@@ -1,0 +1,60 @@
+package sample
+load_package [Some library Function]
+
+string = "hello"
+character = 'a'
+array = ['a', 2 ]
+
+func double(param: int): int{
+    return param * 2;
+}
+
+func is_even(num: int): void {
+    if num%2 == 0 {
+        return true
+    } else {
+        return false
+    }
+}
+
+if argv.len == 0 {
+    fail("not enough arguments") // fail is keyword, and this is a comment
+} else if argv.len < 3 {
+    print("arguments are sufficient but something else is need")
+}
+
+indx = 0
+loop indx != array.len {
+    print("value at index ", indx, "is ", array[indx])
+}
+
+/*in munx only enums can be matched on*/
+enum Gender {
+    Male,
+    Female
+}
+
+object Person {
+    name: string,
+    age: int,
+    height: float,
+    gender: Gender
+}
+
+func show_person(p: Person): void {
+    println(p.name)
+}
+
+func show_gender(p: Person): void {
+    match p.gender {
+        case Gender::Male {
+            print("He is a male")
+        }
+        case Gender::Female {
+            print("She is a female")
+        }
+    }
+}
+
+person = Person("Abdul", 10, 15.45, Gender::Male)
+show_person(person)

@@ -9,7 +9,7 @@
 namespace munx::vm::jit
 {
 
-inline void compile_handlers(compiled_unit &unit, virtual_machine &vm,
+inline void compile_handlers(compiled_unit &unit, virtual_machine &,
                              std::string_view strings);
 
 inline std::shared_ptr<compiled_unit>
@@ -34,7 +34,7 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
     return unit;
 }
 
-inline void compile_handlers(compiled_unit &unit, virtual_machine &vm,
+inline void compile_handlers(compiled_unit &unit, virtual_machine &,
                              std::string_view strings)
 {
     bytecode_cursor cursor{unit.code, strings};
@@ -415,7 +415,7 @@ inline void compile_handlers(compiled_unit &unit, virtual_machine &vm,
             break;
         }
         case Opcode::INDEX_GET:
-            bind([](virtual_machine &machine, frame &current, size_t) {
+            bind([](virtual_machine &, frame &current, size_t) {
                 current.pc += 1;
                 const value index = virtual_machine::jit_pop(current);
                 const value container = virtual_machine::jit_pop(current);
@@ -426,7 +426,7 @@ inline void compile_handlers(compiled_unit &unit, virtual_machine &vm,
         case Opcode::MEMBER_GET:
         {
             const std::string member = cursor.read_name();
-            bind([member](virtual_machine &machine, frame &current, size_t) {
+            bind([member](virtual_machine &, frame &current, size_t) {
                 current.pc += 1 + 8;
                 const value container = virtual_machine::jit_pop(current);
                 current.stack.push_back(

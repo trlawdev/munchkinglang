@@ -374,8 +374,8 @@ struct compiled_package
     std::vector<compiled_function> functions;  ///< Functions and lambdas.
 };
 
-/// Throw a @ref compilation_error formatted as `file:line:col: error: …`.
-[[noreturn]] inline void codegen_error(const ast::source_loc &loc, const std::string &message)
+/// Record a compile error formatted as `file:line:col: error: …`.
+inline void codegen_error(const ast::source_loc &loc, const std::string &message)
 {
     std::ostringstream out;
     out << loc << ": error: " << message;

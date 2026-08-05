@@ -544,6 +544,8 @@ inline map_ref expect_map(const value &item, std::string_view context)
         return map->data;
     }
     throw_error(std::string{context} + " expected a map, got " + type_name(item));
+    static map_ref k_empty = std::make_shared<map_object>();
+    return k_empty;
 }
 
 /// @return The UTF-8 text of @p item.
@@ -555,6 +557,8 @@ inline const std::string &string_data(const value &item)
         return *text;
     }
     throw_error(std::string{"expected a string, got "} + type_name(item));
+    static const std::string k_empty;
+    return k_empty;
 }
 
 /// Deep-copy a user object for by-value returns.
@@ -693,7 +697,7 @@ inline std::string to_display_string(const value &item)
         {
             std::string text = "map{";
             bool first = true;
-            for (const auto &[key, item] : map.data->entries)
+            for (const auto &[key, entry] : map.data->entries)
             {
                 if (!first)
                 {
@@ -702,7 +706,7 @@ inline std::string to_display_string(const value &item)
                 first = false;
                 text += to_display_string(key);
                 text += ": ";
-                text += to_display_string(item);
+                text += to_display_string(entry);
             }
             text += '}';
             return text;
@@ -814,6 +818,7 @@ inline int64_t as_integer(const value &item)
         return static_cast<int64_t>(*number);
     }
     throw_error(std::string{"expected a number, got "} + type_name(item));
+    return 0;
 }
 
 /// @return @p item widened to `double`.

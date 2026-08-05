@@ -141,15 +141,15 @@ namespace munx
             return true;
         }
 
-        /// Throw a @ref compilation_error at @p t with message @p msg.
-        [[noreturn]] void error(const token &t, const std::string &msg)
+        /// Record a compile error at @p t with message @p msg.
+        void error(const token &t, const std::string &msg)
         {
             fail_compile(path_.string() + ':' + std::to_string(t.line) +
                                     ':' + std::to_string(t.column) + ": error: " + msg);
         }
 
-        /// Throw a @ref compilation_error at the current token.
-        [[noreturn]] void error_here(const std::string &msg) { error(cur(), msg); }
+        /// Record a compile error at the current token.
+        void error_here(const std::string &msg) { error(cur(), msg); }
 
         /// Require kind @p type or throw with @p msg; return the consumed token.
         const token &expect(token_type type, const char *msg)
@@ -159,6 +159,7 @@ namespace munx
                 return advance();
             }
             error_here(msg);
+            return cur();
         }
 
         /// Require keyword @p kw or throw.
@@ -178,6 +179,7 @@ namespace munx
                 return text(advance());
             }
             error_here("expected identifier");
+            return {};
         }
 
         // ---- types ----------------------------------------------------------
@@ -702,6 +704,7 @@ namespace munx
             }
 
             error_here("expected expression");
+            return nullptr;
         }
 
         /// Parse `[…]` or typed `[T][…]` array literals.

@@ -496,7 +496,9 @@ inline int run_daemon_posix()
             {
                 const client_id id = state.assign_id(*connection);
                 state.served_clients = true;
-                state.clients.emplace(id, client_state{std::move(*connection)});
+                client_state client{};
+                client.connection = std::move(*connection);
+                state.clients.emplace(id, std::move(client));
             }
         }
 

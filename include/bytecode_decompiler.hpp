@@ -338,6 +338,20 @@ private:
             }
             return "tuple[" + join(elements, ", ") + ']';
         }
+        case ast::type_kind::Map:
+            return "map[" + decompile_type(input) + ", " + decompile_type(input) +
+                   ']';
+        case ast::type_kind::Lambda:
+        {
+            const uint32_t count = input.u32();
+            std::vector<std::string> params;
+            params.reserve(count);
+            for (uint32_t index = 0; index < count; ++index)
+            {
+                params.push_back(decompile_type(input));
+            }
+            return "lambda(" + join(params, ", ") + ") -> " + decompile_type(input);
+        }
         }
         return "unknown";
     }

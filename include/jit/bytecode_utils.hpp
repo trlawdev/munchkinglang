@@ -98,6 +98,20 @@ struct bytecode_cursor
             }
             break;
         }
+        case ast::type_kind::Map:
+            target.elements.push_back(read_type());
+            target.elements.push_back(read_type());
+            break;
+        case ast::type_kind::Lambda:
+        {
+            const auto count = read_scalar<uint32_t>();
+            for (uint32_t index = 0; index < count; ++index)
+            {
+                target.elements.push_back(read_type());
+            }
+            target.elements.push_back(read_type());
+            break;
+        }
         }
         return target;
     }

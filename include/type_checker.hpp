@@ -485,7 +485,7 @@ private:
         declare("env", {str_ret()}, any());
     }
 
-    [[noreturn]] static void fail(const ast::source_loc &loc, const std::string &message)
+    static void fail(const ast::source_loc &loc, const std::string &message)
     {
         fail_compile(loc.file + ':' + std::to_string(loc.line) + ':' +
                                 std::to_string(loc.column) + ": error: " + message);
@@ -1003,10 +1003,7 @@ private:
             sig.loc = stmt.loc;
             sig.ret = resolved_type::unknown();
             sig.params.reserve(fn.parameters.size());
-            for (const ast::parameter &param : fn.parameters)
-            {
-                sig.params.push_back(resolved_type::unknown());
-            }
+            sig.params.assign(fn.parameters.size(), resolved_type::unknown());
             scope.funcs.emplace(fn.name, std::move(sig));
             break;
         }
@@ -1282,6 +1279,7 @@ private:
             return resolved_type::simd(resolved_type::unknown());
         }
         fail(loc, "`simd` operand must be an array of primitive values");
+        return resolved_type::unknown();
     }
 
     [[nodiscard]] resolved_type check_binary(const ast::binary_expr &expr,

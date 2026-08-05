@@ -121,7 +121,7 @@ public:
             if (connection_.valid())
             {
                 const std::vector<std::byte> frame = encode_bye();
-                connection_.write_all(frame);
+                (void)connection_.write_all(frame);
                 connection_.shutdown_rw();
                 connection_.close();
             }
@@ -175,7 +175,7 @@ public:
                 return;
             }
             const std::vector<std::byte> frame = encode_detach(channel, mode);
-            connection_.write_all(frame);
+            (void)connection_.write_all(frame);
         }
         if (mode == attachment_mode::QueueIn ||
             mode == attachment_mode::BroadcastIn)
@@ -308,7 +308,7 @@ private:
         }
         const std::vector<std::byte> frame =
             encode_hello(munx::platform_process_id());
-        connection_.write_all(frame);
+        (void)connection_.write_all(frame);
     }
 
     void connect_locked()

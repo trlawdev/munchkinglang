@@ -356,6 +356,7 @@ inline value decode_value(wire_reader &input)
     }
     }
     throw_error("unsupported pipe payload tag");
+    return value{};
 }
 
 inline std::vector<std::byte> serialize_value(const value &item)

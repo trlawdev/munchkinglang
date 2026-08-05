@@ -73,7 +73,7 @@ public:
     }
 
 private:
-    [[noreturn]] static void fail(const std::string &message)
+    static void fail(const std::string &message)
     {
         fail_compile("invalid .mxb: " + message);
     }

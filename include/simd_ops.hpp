@@ -71,6 +71,7 @@ inline void require_avx2()
         return simd_lane_kind::Bool;
     }
     throw_error("SIMD lanes must be int, float, char, or bool");
+    return simd_lane_kind::Int;
 }
 
 [[nodiscard]] inline int32_t lane_to_i32(const value &item, simd_lane_kind kind)
@@ -85,6 +86,7 @@ inline void require_avx2()
         return *item.get_if<bool>() ? 1 : 0;
     default:
         throw_error("internal SIMD lane conversion error");
+        return 0;
     }
 }
 
@@ -370,6 +372,7 @@ inline MUNX_AVX2_TARGET void sub_f32_lanes(const float *left, const float *right
         return value{lane != 0};
     default:
         throw_error("internal SIMD lane conversion error");
+        return value{};
     }
 }
 

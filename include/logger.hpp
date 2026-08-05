@@ -59,7 +59,7 @@ namespace munx
     /// No-op stream tag (placeholder for optional formatting).
     struct stream_nop {};
     /// Leave @p os unchanged.
-    inline std::ostream& operator<<(std::ostream& os, stream_nop nop) {
+    inline std::ostream& operator<<(std::ostream& os, stream_nop /*nop*/) {
         return os;
     }
 

@@ -100,8 +100,8 @@ namespace munx
             col_ += n;
         }
 
-        /// Throw @ref compilation_error at the current cursor position.
-        [[noreturn]] void fail(const char *msg) const
+        /// Record a compile error at the current cursor position.
+        void fail(const char *msg) const
         {
             fail_compile(path_.string() + ':' + std::to_string(line_) +
                                     ':' + std::to_string(col_) + ": error: " + msg);
@@ -314,6 +314,7 @@ namespace munx
                 return make(token_type::TILDE, std::string{"~"});
             default:
                 fail("unexpected character");
+                return make(token_type::END, std::string{});
             }
         }
 
@@ -411,6 +412,7 @@ namespace munx
                 return '\'';
             default:
                 fail("unrecognized escape character");
+                return '\0';
             }
         }
 

@@ -967,6 +967,7 @@ private:
                 message += to_display_string(argument);
             }
             throw_error(message.empty() ? "failed" : message);
+            return value{};
         });
         define_builtin("fix", [](virtual_machine &, value_vector &arguments) {
             expect_arity(arguments, 1, 1, "fix");
@@ -1163,6 +1164,7 @@ private:
                 return open_socket(arguments);
             }
             throw_error("unsupported io_type::" + kind->member);
+            return value{};
         });
         define_builtin("close", [](virtual_machine &, value_vector &arguments) {
             expect_arity(arguments, 1, 1, "close");
@@ -1687,6 +1689,7 @@ private:
             return static_cast<int64_t>((*object)->fields.size());
         }
         throw_error(std::string{"cannot take the length of "} + type_name(item));
+        return 0;
     }
 
     /// @return The mutable backing store of an array or tuple value.
@@ -1702,6 +1705,8 @@ private:
         }
         throw_error(std::string{name} + " expects an array, got " +
                     type_name(item));
+        static sequence_ref k_empty = std::make_shared<sequence_object>();
+        return k_empty;
     }
 
     static const value_vector &elements_of(const value &item)
@@ -1720,6 +1725,8 @@ private:
         }
         throw_error(std::string{"expected an array or tuple, got "} +
                     type_name(item));
+        static const value_vector k_empty;
+        return k_empty;
     }
 
     static value index_value(const value &container, const value &index)
@@ -1785,6 +1792,7 @@ private:
         }
         throw_error(std::string{"cannot read member `"} + member + "` of " +
                     type_name(container));
+        return value{};
     }
 
     static value cast_value(const value &item, const type_spec &target)
@@ -1802,6 +1810,7 @@ private:
             }
             throw_error("cannot cast " + std::string{type_name(item)} + " to " +
                         target.name);
+            return value{};
         }
         case ast::type_kind::Array:
         {
@@ -1822,6 +1831,7 @@ private:
                             "-element value to a " +
                             std::to_string(target.elements.size()) +
                             "-element tuple");
+                return value{};
             }
             auto converted = std::make_shared<sequence_object>();
             for (size_t index = 0; index < items.size(); ++index)
@@ -1831,8 +1841,12 @@ private:
             }
             return value{tuple_value{converted}};
         }
+        case ast::type_kind::Map:
+        case ast::type_kind::Lambda:
+            break;
         }
         throw_error("unsupported cast target");
+        return value{};
     }
 
     static value cast_primitive(const value &item, ast::primitive_kind target)
@@ -1921,6 +1935,7 @@ private:
         }
         throw_error(std::string{"cannot cast "} + type_name(item) +
                     " to the requested primitive type");
+        return value{};
     }
 
     static int64_t parse_integer(const std::string &text)
@@ -2078,6 +2093,7 @@ private:
             break;
         }
         throw_error("unsupported arithmetic opcode");
+        return value{};
     }
 
     static value compare(Opcode opcode, const value &left, const value &right)
@@ -2099,6 +2115,7 @@ private:
         {
             throw_error(std::string{"cannot order "} + type_name(left) +
                         " against " + type_name(right));
+            return value{};
         }
         switch (opcode)
         {
@@ -2114,6 +2131,7 @@ private:
             break;
         }
         throw_error("unsupported comparison opcode");
+        return value{};
     }
 
     static value bitwise(Opcode opcode, const value &left, const value &right)
@@ -2137,6 +2155,7 @@ private:
             break;
         }
         throw_error("unsupported bitwise opcode");
+        return value{};
     }
 
     // -- frame helpers ------------------------------------------------------

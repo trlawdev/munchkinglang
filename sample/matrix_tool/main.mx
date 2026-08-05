@@ -1,0 +1,43 @@
+package matrix_tool
+load_package matrix
+
+// Integer matrix calculator demo.
+//
+// Compile from the repository root:
+//   ./munxc sample/matrix_tool/main.mx
+//
+// Run:
+//   ./munxc --run sample/matrix_tool/main.mx
+
+println("=== munx matrix calculator ===")
+println("")
+
+a = [[1, 2, 3], [4, 5, 6]]
+b = [[7, 8], [9, 10], [11, 12]]
+i3 = identity(3)
+
+print_matrix("Matrix A (2x3):", a)
+println("")
+print_matrix("Matrix B (3x2):", b)
+println("")
+print_matrix("Identity I3:", i3)
+println("")
+
+print("trace(I3) = ")
+println(cast[string](trace(i3)))
+println("")
+
+print_matrix("A + A:", add(a, a))
+println("")
+
+print_matrix("A * B (2x2):", multiply(a, b))
+println("")
+
+print_matrix("transpose(A) (3x2):", transpose(a))
+println("")
+
+print("SIMD row scale (row 0 of A times 10):")
+print_simd_scaled_row(a[0], 10)
+
+println("")
+println("Done.")

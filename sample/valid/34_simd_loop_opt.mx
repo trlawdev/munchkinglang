@@ -1,0 +1,35 @@
+package simd_loop_opt
+
+left = [1, 2, 3, 4]
+right = [10, 20, 30, 40]
+
+// Element-wise add via counted loop — lowered to SIMD at compile time.
+sum_out = []
+index = 0
+loop index < left.len {
+    sum_out = sum_out + [left[index] + right[index]]
+    index += 1
+}
+
+print("sum: ", sum_out)
+println("")
+
+diff_out = []
+index = 0
+loop index < left.len {
+    diff_out = diff_out + [left[index] - right[index]]
+    index += 1
+}
+
+print("diff: ", diff_out)
+println("")
+
+prod_out = []
+index = 0
+loop index < left.len {
+    prod_out = prod_out + [left[index] * right[index]]
+    index += 1
+}
+
+print("prod: ", prod_out)
+println("")

@@ -1,0 +1,8 @@
+package process_
+
+in_pipe = pipe("pipe_id", in) // pipe is a keyword, in is a keyword, declares a pipe that takes input data
+
+self_pid = process.id() // gets the id of the current running process
+pid = process("/some/file/path.mx", [1,2,3]) // process is a keyword, creates a process from a given file
+
+"Hello there" -> in_pipe // -> is an pipe insertion operator

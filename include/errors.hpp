@@ -1,18 +1,22 @@
 #pragma once
 #include <exception>
+#include <string>
 
 namespace munx
 {
 
+  /// Fatal front-end failure (lex, parse, or compile).
+  /// Carries a human-readable message, typically `file:line:col: error: …`.
   class compilation_error : public std::exception
   {
-    const char *message_;
+    std::string message_;
 
   public:
-    // Not constexpr: std::exception's constructor is not constexpr.
-    explicit compilation_error(const char *message) : message_(message) {}
+    /// Construct with a fully formatted diagnostic message.
+    explicit compilation_error(std::string message) : message_(std::move(message)) {}
 
-    constexpr const char *what() const noexcept override { return message_; }
+    /// @return Null-terminated diagnostic text (owned by this object).
+    const char *what() const noexcept override { return message_.c_str(); }
   };
 
 } // namespace munx

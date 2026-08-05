@@ -1,0 +1,19 @@
+package bool_null_regex_literals
+
+// booleans and null are literals, not keywords
+yes = true
+no = false
+nothing = null
+
+// regex literals are raw: backslashes are kept verbatim,
+// no escape processing is performed inside them
+empty_pattern = r""
+word = r"[a-z]+"
+digits = r"\d+"
+whitespace = r"\s*"
+anchored = r"^start.*end$"
+groups = r"(foo|bar){1,3}[^abc]"
+
+// a regex is raw, so it cannot contain a `"` at all: the first
+// quote encountered always closes the literal
+brackets = r"[{}()\[\]]"

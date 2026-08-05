@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// a trailing comma leaves the list expecting another value
+buff = alloc [100] [1, 2,]

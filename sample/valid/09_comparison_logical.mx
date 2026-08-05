@@ -1,0 +1,29 @@
+package comparison_logical
+
+// relational operators
+lt = a < b
+gt = a > b
+le = a <= b
+ge = a >= b
+
+// equality operators
+eq = a == b
+ne = a != b
+
+// logical operators
+both = a && b
+either = a || b
+
+// precedence: arithmetic > relational > equality > && > ||
+// parses as ((1 + 2) < (3 * 4)) == true
+compare_math = 1 + 2 < 3 * 4 == true
+
+// parses as (a < b) && (c > d) || (e == f)
+combined = a < b && c > d || e == f
+
+// left associativity of the logical operators
+long_and = a && b && c
+long_or = a || b || c
+
+// parentheses to force the other grouping
+forced = a && (b || c)

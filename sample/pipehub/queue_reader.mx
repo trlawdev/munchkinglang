@@ -1,0 +1,10 @@
+package pipehub_queue_reader
+// Queue-mode reader for cross-process testing.
+
+println = fix(open(io_type::tty, out))
+events = pipe("pipehub.events", in)
+event = <- events
+if event == null {
+    fail("pipe hub closed before a message arrived")
+}
+println(concat("received: ", cast[string](event)))

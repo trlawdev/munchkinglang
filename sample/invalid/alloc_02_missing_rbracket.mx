@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `]` after alloc size
+// the capacity is a single expression, so the second value is
+// never reached
+buff = alloc [100, 200] [1]

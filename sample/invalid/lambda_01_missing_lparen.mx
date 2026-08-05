@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `(` after `lambda`
+f = lambda x: int => {
+    return x
+}

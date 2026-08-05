@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// the assignment has no right-hand side
+x =

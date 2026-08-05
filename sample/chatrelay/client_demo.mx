@@ -1,0 +1,59 @@
+package client_demo
+load_package types
+
+// Tiny interactive client for the chat relay — useful as a smoke test
+// once the VM can run programs. Speaks the same line protocol as server.mx.
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+readln = fix(open(io_type::tty, in, '\n'))
+
+HOST = "127.0.0.1"
+PORT = 7070
+
+if argv.len < 1 {
+    fail("usage: client_demo <nick>")
+}
+
+nick = argv[0]
+
+sock = open(io_type::socket, af_type::inet, sock_type::stream)
+monitor {
+    connect(sock, HOST, PORT)
+} trap(err: exception) {
+    fail(concat("cannot reach chatrelay at ", HOST, ":", cast[string](PORT)))
+}
+
+// reader thread: print everything the server pushes
+reader = thread(lambda (s: socket): void => {
+    loop {
+        chunk = read(s, 1024)
+        if chunk == null {
+            break
+        }
+        print(cast[string](chunk))
+    }
+}, {sock})
+
+write(sock, concat("NICK ", nick, "\n"))
+
+// main thread: forward stdin lines as SAY, or pass through slash-commands
+loop {
+    line = readln()
+    if line == null {
+        break
+    }
+    if line == "/quit" {
+        write(sock, "QUIT\n")
+        break
+    } else if line == "/who" {
+        write(sock, "WHO\n")
+    } else if has_substring_regex(line, r"^/") {
+        println("unknown local command (try /who or /quit)")
+    } else {
+        write(sock, concat("SAY ", line, "\n"))
+    }
+}
+
+close(sock)
+join [reader]

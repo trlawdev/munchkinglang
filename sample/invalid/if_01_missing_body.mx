@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `{`
+// an if branch requires a block, not a bare statement
+if ready
+    print("ready")

@@ -1,0 +1,45 @@
+package assignments
+
+// plain assignment
+x = 1
+
+// compound assignment
+x += 2
+
+// an assignment target is always a plain name; the value may be
+// any expression
+from_literal = 42
+from_ident = x
+from_binary = x + 1 * 2
+from_unary = -x
+from_group = (x + 1) * 2
+from_call = compute(1, 2)
+from_member = obj.field
+from_index = items[0]
+from_chain = registry[0].build().name
+from_array = [1, 2, 3]
+from_typed_array = [int][1, 2]
+from_tuple = {1, 2}
+from_cast = cast[int]("7")
+from_lambda = lambda (a: int): int => {
+    return a
+}
+from_alloc = alloc [16] [1]
+from_enum_access = Gender::Male
+from_regex = r"[0-9]+"
+from_pipe_read = <- in_pipe
+from_null = null
+
+// compound assignment accepts the same range of values
+counter += compute(1) * 2
+
+// repeated assignment to the same name
+value = 1
+value = 2
+value += 3
+
+// expression statements, which need no target at all
+print("hello")
+compute(1, 2)
+obj.method()
+items[0]

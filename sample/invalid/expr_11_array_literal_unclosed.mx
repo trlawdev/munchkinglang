@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected `]` after array literal
+x = [1, 2, 3

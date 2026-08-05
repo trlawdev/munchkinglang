@@ -1,0 +1,8 @@
+package bad
+
+// expected error: `load_packages` is only allowed at the top of the file, before any other statement
+monitor {
+    risky()
+} trap(e: exception) {
+    load_packages {io}
+}

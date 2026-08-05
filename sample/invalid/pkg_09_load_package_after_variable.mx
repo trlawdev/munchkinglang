@@ -1,0 +1,7 @@
+package bad
+
+// expected error: `load_package` is only allowed at the top of the file, before any other statement
+// the import header ends at the first statement, so a global
+// variable declaration closes it
+x = 1
+load_package io

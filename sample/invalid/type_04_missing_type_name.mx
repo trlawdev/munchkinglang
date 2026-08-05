@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected identifier
+// a type must be a name, an array type or a tuple type
+func f(a: 42): int {
+    return a
+}

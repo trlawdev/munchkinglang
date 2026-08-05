@@ -1,0 +1,33 @@
+package cast_expressions
+
+// casts between primitive types
+i = cast[int]("134")
+f = cast[float]("134.5")
+s = cast[string](42)
+b = cast[bool](1)
+c = cast[character](97)
+
+// cast to a named type
+p = cast[Person](raw)
+
+// cast to compound types
+arr = cast[[int]](raw)
+nested_arr = cast[[[int]]](raw)
+tup = cast[tuple[int, int]](raw)
+nested_tup = cast[tuple[[int], tuple[bool]]](raw)
+
+// the operand may be any expression
+from_expr = cast[int](a + b * 2)
+from_call = cast[string](compute(1, 2))
+from_member = cast[float](obj.field)
+from_index = cast[int](items[0])
+from_literal_array = cast[string]([int][1, 2, 3, 4])
+from_cast = cast[string](cast[int]("7"))
+
+// a cast is a primary expression, so it takes part in larger expressions
+combined = cast[int]("1") + cast[int]("2")
+negated = -cast[int]("5")
+as_argument = print(cast[string](3.14))
+
+// a cast result supports postfix access
+length = cast[string](42).len

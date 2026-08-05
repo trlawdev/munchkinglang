@@ -1,0 +1,10 @@
+package bad
+
+// expected error: expected `{`
+// `else if` needs a condition of its own; without one the `{` is
+// consumed as a tuple-literal condition instead of the branch body
+if a {
+    print("a")
+} else if {
+    print("b")
+}

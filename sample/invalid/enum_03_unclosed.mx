@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `}` after enum members
+enum Gender {
+    Male,
+    Female

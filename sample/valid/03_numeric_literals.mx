@@ -1,0 +1,23 @@
+package numeric_literals
+
+// integers
+zero = 0
+one = 1
+many_digits = 1234567890
+leading_zeros = 007
+
+// largest representable 64-bit signed integer
+int_max = 9223372036854775807
+
+// floats: a digit is required on both sides of the dot
+half = 0.5
+pi = 3.14159
+long_fraction = 1.000000001
+
+// negation is a unary operator, not part of the literal
+neg_int = -42
+neg_float = -0.25
+
+// `1.len` lexes as the integer 1 followed by a member access,
+// because `.` is only part of a float when a digit follows it
+digits = 1.len

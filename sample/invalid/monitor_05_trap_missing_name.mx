@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected identifier
+monitor {
+    risky()
+} trap(: exception) {
+}

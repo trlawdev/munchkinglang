@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// delete takes the name of a buffer
+delete 42

@@ -1,0 +1,4 @@
+package bad
+
+// expected error: unterminated string literal
+msg = "this string is never closed

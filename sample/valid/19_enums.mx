@@ -1,0 +1,42 @@
+package enums
+
+// no members
+enum Empty {}
+
+// one member
+enum Single {
+    Only
+}
+
+// several members, one per line
+enum Gender {
+    Male,
+    Female
+}
+
+// several members on one line
+enum Direction {
+    North, South, East, West
+}
+
+// members with comments interleaved
+enum SockType {
+    stream, // tcp
+    dgram   // udp
+}
+
+// member names may repeat identifiers used elsewhere
+enum IoType {
+    socket,
+    file,
+    tty
+}
+
+// accessing members
+d = Direction::North
+g = Gender::Female
+s = SockType::stream
+
+// enum access inside larger expressions
+is_north = Direction::North == current
+call_arg = open(IoType::socket, SockType::dgram)

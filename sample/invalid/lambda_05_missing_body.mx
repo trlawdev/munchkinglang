@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `{`
+// the `=>` must be followed by a block
+f = lambda (x: int): int => x

@@ -1,0 +1,63 @@
+package if_else
+
+// if alone
+if ready {
+    print("ready")
+}
+
+// if with an empty body
+if ready {
+}
+
+// if / else
+if count == 0 {
+    print("empty")
+} else {
+    print("non-empty")
+}
+
+// if / else if
+if count == 0 {
+    print("empty")
+} else if count < 3 {
+    print("few")
+}
+
+// a full chain: if, several else ifs, else
+if count == 0 {
+    print("zero")
+} else if count < 3 {
+    print("few")
+} else if count < 10 {
+    print("some")
+} else if count < 100 {
+    print("many")
+} else {
+    print("lots")
+}
+
+// conditions may be any expression
+if !flag && items.len > 0 || override {
+    print("complex condition")
+}
+
+if obj.method(1)[0] == "x" {
+    print("postfix condition")
+}
+
+if <- control_pipe {
+    print("condition from a pipe read")
+}
+
+// nested if statements
+if outer_flag {
+    if inner_flag {
+        print("both")
+    } else {
+        print("outer only")
+    }
+} else if fallback {
+    if deep {
+        print("deep")
+    }
+}

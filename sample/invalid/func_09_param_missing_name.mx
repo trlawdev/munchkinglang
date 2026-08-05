@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected identifier
+// a parameter needs a name as well as a type
+func f(: int): int {
+    return 1
+}

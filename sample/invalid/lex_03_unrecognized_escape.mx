@@ -1,0 +1,5 @@
+package bad
+
+// expected error: unrecognized escape character
+// only \n \t \a \\ \" and \' are recognized
+msg = "hello\qworld"

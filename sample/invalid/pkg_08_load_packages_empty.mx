@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// unlike an array literal, the package list may not be empty
+load_packages {}

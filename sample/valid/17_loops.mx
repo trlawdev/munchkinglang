@@ -1,0 +1,59 @@
+package loops
+
+// conditional loop
+i = 0
+loop i != 10 {
+    i += 1
+}
+
+// loop with an empty body
+loop ready {
+}
+
+// unconditional loop with a break
+loop {
+    if done {
+        break
+    }
+}
+
+// break from a nested conditional
+loop {
+    if a {
+        if b {
+            break
+        }
+    } else {
+        break
+    }
+}
+
+// complex loop conditions
+loop index < items.len && !stop {
+    print(items[index])
+    index += 1
+}
+
+loop <- control_pipe {
+    print("driven by a pipe read")
+}
+
+// nested loops
+loop outer_flag {
+    loop inner_flag {
+        break
+    }
+    loop {
+        break
+    }
+}
+
+// declarations inside a loop body
+loop retry {
+    func attempt(): bool {
+        return true
+    }
+    handler = lambda (): void => {
+    }
+    retry = attempt()
+}

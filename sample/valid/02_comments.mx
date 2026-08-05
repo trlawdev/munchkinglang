@@ -1,0 +1,25 @@
+package comments
+
+// a line comment
+//a line comment with no leading space
+// a line comment containing /* block markers */ and "quotes"
+
+/* a single-line block comment */
+
+/*
+   a block comment
+   spanning several lines
+*/
+
+/* a block comment containing // a line marker */
+
+x = 1 // trailing line comment
+y = /* inline block comment */ 2
+z = 3 /* comment */ + 4
+
+func documented(a: int): int { // brace-line comment
+    /* leading comment */
+    return a // trailing comment
+}
+
+// a comment as the final line, with no trailing newline

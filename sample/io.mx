@@ -1,0 +1,104 @@
+package io_
+load_package io
+
+enum io_type {
+    socket,
+    file,
+    tty
+}
+
+enum af_type {
+    inet, inet6
+}
+
+enum sock_type {
+    stream, //tcp
+    dgram //udp
+    
+}
+
+/* this a multiline comment*/
+
+//tcp server
+server = open(io_type::socket, af_type::inet, sock_type::stream) //socket is a keyword
+bind(server, "127.0.0.1", 8000) //bind is a keyword
+listen(server, 4) // listen is a keyword, applies only to sockets
+
+loop {
+    client_socket, addr = accept(server)
+    data = read(client_socket, 1024)
+    num_written = write(client_socket, "hello there")
+    close(client_socket)
+}
+
+//tcp client
+client = open(io_type::socket, af_type::inet, sock_type::stream)
+bind("127.0.0.1", 8000)
+
+write(client, "Hello server")
+response = read(1024)
+close(client)
+
+//udp server
+udp_server = open(io_type::socket, af_type::inet, sock_type::dgram)
+bind(udp_server, "127.0.0.1", 9999)
+{data, addr} = read(udb_server, 1024)
+write(udp_server, addr, "ACK")
+
+//udp client
+udp_client = open(io_type::socket, af_type::inet, sock_type::dgram)
+write(udp_client, {"127.0.0.1", 9999}, "Hello UDP")
+{resp, _} = read(client, 1024)
+print(resp)
+
+//multiple tcp clients
+server = open(io_type::socket, af_type::inet, sock_type::stream) //socket is a keyword
+bind(server, "127.0.0.1", 8000) //bind is a keyword
+listen(server, 256) // listen is a keyword, applies only to sockets
+
+loop {
+    client_socket, addr = accept(server)
+    thread(lambda (client_addr: socket, addr: string): void  => {
+        loop {
+            data = read(client_socket, 1024)
+            if data == null {
+                break
+            } else {
+                print(data)
+            }
+            write(client_socket, data)
+        }
+    }, {client_socket, addr})
+    //append(tobjs, tobj) // append is a keyword
+}
+
+/* file io */
+
+file_object = open(io_type::file, "/home/some/file/path.txt", in) // file_object has a type `file`
+data = read(file_object, 1024) //optional amount of bytes, if not passed, reads all the file
+// write() fails
+close(file_object)
+
+monitor { // monitor is a keyword
+    file_object = open(io_type::file, "/home/some/file/path.txt", out)
+    num_written = write(file_object, "Hello there")
+    close(file_object)
+} trap(error_object: exception) {
+    //do something
+}
+
+//terminal io
+print = fix(open(io_type::tty, out)) // fix is a keyword, that binds a reference to a variable and prevents reassignment
+println = fix(open(io_type::tty, out)) // these are globally initialized objects, cannot be reassigned
+readln = fix(open(io_type::tty, in, '\n')) // '\n' line_terminator
+//io_type::tty returns an io_object of type `term`
+
+// type conversions are only possible for only primitive types, any other form of conversion should be implemented manually by the user
+str = "134"
+i = cast[int](str)
+f = cast[float](str)
+
+cast[string](i) // == "134"
+cast[string](f) // == "134.0"
+
+cast[string]([int][1,2,3,4]) // == "[1,2,3,4]"

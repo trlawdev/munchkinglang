@@ -1,0 +1,8 @@
+package bad
+
+// expected error: expected `{`
+// with the condition missing, the `{` is consumed as the start of a
+// tuple-literal condition, leaving no block for the branch body
+if {
+    print("ready")
+}

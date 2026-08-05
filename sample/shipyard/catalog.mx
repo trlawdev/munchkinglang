@@ -1,0 +1,67 @@
+package catalog
+load_packages {types, logging}
+
+// Known SKUs and validation helpers. Every lookup and rejection is logged.
+
+KNOWN_SKUS = [string]["WIDGET-A", "WIDGET-B", "GADGET-X", "GADGET-Y", "PART-Z"]
+
+func sku_index(sku: string): int {
+    i = 0
+    loop i != KNOWN_SKUS.len {
+        if KNOWN_SKUS[i] == sku {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+func is_known_sku(sku: string): bool {
+    found = sku_index(sku) != -1
+    if found {
+        log_trace("catalog", sku, "sku recognized in catalog")
+    } else {
+        log_warn("catalog", sku, "unknown sku rejected")
+    }
+    return found
+}
+
+func validate_qty(qty: int): bool {
+    if qty <= 0 {
+        log_warn("catalog", "qty", concat("non-positive quantity ", cast[string](qty)))
+        return false
+    }
+    if qty > 100 {
+        log_warn("catalog", "qty", concat("excessive quantity ", cast[string](qty)))
+        return false
+    }
+    log_trace("catalog", "qty", concat("quantity ok: ", cast[string](qty)))
+    return true
+}
+
+func validate_customer(email: string): bool {
+    if email.len == 0 {
+        log_warn("catalog", "customer", "empty customer email")
+        return false
+    }
+    if !has_substring_regex(email, r".+@.+") {
+        log_warn("catalog", email, "customer email failed pattern check")
+        return false
+    }
+    log_trace("catalog", email, "customer email accepted")
+    return true
+}
+
+func parse_priority(raw: string): order_priority {
+    trimmed = trim(raw)
+    if trimmed == "express" {
+        log_debug("catalog", trimmed, "priority mapped to Express")
+        return order_priority::Express
+    }
+    if trimmed == "overnight" {
+        log_debug("catalog", trimmed, "priority mapped to Overnight")
+        return order_priority::Overnight
+    }
+    log_debug("catalog", trimmed, "priority defaulted to Standard")
+    return order_priority::Standard
+}

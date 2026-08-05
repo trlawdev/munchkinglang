@@ -1,0 +1,5 @@
+package bad
+
+/* expected error: unterminated block comment
+   this comment is never closed
+x = 1

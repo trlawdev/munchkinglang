@@ -1,0 +1,5 @@
+package bad
+
+// expected error: unterminated escape sequence
+// the file ends immediately after the backslash
+msg = "trailing escape \

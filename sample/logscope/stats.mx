@@ -1,0 +1,55 @@
+package stats
+load_package types
+
+// All parser workers feed one aggregator, but the lock keeps this package safe
+// if aggregation is parallelized later or queried while the job is running.
+lock summary_lock
+
+total = 0
+successful = 0
+redirected = 0
+client_errors = 0
+server_errors = 0
+malformed = 0
+bytes_seen = 0
+duration_seen = 0.0
+
+func record_entry(entry: LogRecord): void {
+    acquire summary_lock
+
+    total += 1
+    if entry.malformed {
+        malformed += 1
+    } else {
+        bytes_seen += entry.bytes
+        duration_seen += entry.duration_ms
+
+        if entry.status >= 500 {
+            server_errors += 1
+        } else if entry.status >= 400 {
+            client_errors += 1
+        } else if entry.status >= 300 {
+            redirected += 1
+        } else if entry.status >= 200 {
+            successful += 1
+        }
+    }
+
+    release summary_lock
+}
+
+func snapshot(): Summary {
+    acquire summary_lock
+    result = Summary(
+        total,
+        successful,
+        redirected,
+        client_errors,
+        server_errors,
+        malformed,
+        bytes_seen,
+        duration_seen
+    )
+    release summary_lock
+    return result
+}

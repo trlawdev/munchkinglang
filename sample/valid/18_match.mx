@@ -1,0 +1,74 @@
+package match_statements
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+// one case
+match paint {
+    case Color::Red {
+        print("red")
+    }
+}
+
+// several cases
+match paint {
+    case Color::Red {
+        print("red")
+    }
+    case Color::Green {
+        print("green")
+    }
+    case Color::Blue {
+        print("blue")
+    }
+}
+
+// a case with an empty body
+match paint {
+    case Color::Red {
+    }
+}
+
+// no cases at all
+match paint {
+}
+
+// the scrutinee may be any expression
+match p.gender {
+    case Gender::Male {
+        print("he")
+    }
+}
+
+match people[0].gender {
+    case Gender::Female {
+        print("she")
+    }
+}
+
+match classify(value) {
+    case Color::Blue {
+        print("blue")
+    }
+}
+
+// case bodies may contain any statement, including nested matches
+match paint {
+    case Color::Red {
+        if bright {
+            print("bright red")
+        }
+        loop fading {
+            break
+        }
+        match shade {
+            case Color::Green {
+                print("green shade")
+            }
+        }
+        return
+    }
+}

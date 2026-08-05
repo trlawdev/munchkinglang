@@ -1,0 +1,28 @@
+package unary_operators
+
+// logical not
+not_true = !true
+not_expr = !(a && b)
+not_call = !is_even(4)
+
+// bitwise not
+complement = ~5
+complement_ident = ~mask
+
+// negation
+negative = -5
+negative_float = -1.5
+negative_ident = -count
+negative_call = -double(3)
+
+// unary operators stack and nest
+double_not = !!flag
+mixed_stack = !-~5
+
+// unary binds tighter than binary
+precedence = -2 * 3
+precedence2 = !a && b
+
+// unary applies to postfix expressions
+negated_member = -obj.field
+negated_index = -items[0]

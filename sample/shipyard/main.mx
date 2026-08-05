@@ -1,0 +1,111 @@
+package shipyard
+load_packages {types, logging, pipeline}
+
+// Order-fulfillment center with verbose structured logging.
+//
+// Real-world shape:
+//   - reads a CSV order feed from disk
+//   - validates SKUs, quantities, and customer emails concurrently
+//   - reserves inventory under a lock (every mutation is logged)
+//   - routes, packs, and ships through a worker pool
+//   - drains every lifecycle event into an async log file
+//
+// Compile from the repository root:
+//   ./munxc sample/shipyard/main.mx
+//
+// Run with the VM:
+//   ./munxc --run sample/shipyard/main.mx sample/shipyard/orders.csv
+//   ./munxc --run sample/shipyard/main.mx sample/shipyard/orders.csv --log run.log --verbose --trace
+
+func print_help(): void {
+    terminal = open(io_type::tty, out)
+    write(terminal, concat(
+        "usage: shipyard ORDERS.csv [--log PATH] [--verbose] [--debug|--trace]\n",
+        "\n",
+        "Processes a CSV order feed and writes a detailed audit log.\n",
+        "  --log PATH     log file destination (default shipyard.log)\n",
+        "  --verbose      mirror log lines to the terminal\n",
+        "  --debug        emit DEBUG and above\n",
+        "  --trace        emit TRACE and above (very noisy)\n"
+    ))
+}
+
+if argv.len == 0 {
+    fail("usage: shipyard ORDERS.csv [--log PATH] [--verbose] [--debug|--trace]")
+}
+
+arg_start = 0
+if argv[0] == "--" {
+    arg_start = 1
+}
+
+input_path = ""
+log_path = "shipyard.log"
+verbose = false
+level = log_level::Info
+
+i = arg_start
+loop i < argv.len {
+    if argv[i] == "--help" {
+        print_help()
+        return
+    } else if argv[i] == "--log" {
+        if i + 1 >= argv.len {
+            fail("--log requires a path")
+        }
+        log_path = argv[i + 1]
+        i += 1
+    } else if argv[i] == "--verbose" {
+        verbose = true
+    } else if argv[i] == "--debug" {
+        level = log_level::Debug
+    } else if argv[i] == "--trace" {
+        level = log_level::Trace
+    } else if argv[i] == "--" {
+        // already skipped a leading `--`; ignore any others
+    } else if input_path == "" {
+        input_path = argv[i]
+    } else {
+        fail(concat("unexpected argument: ", argv[i]))
+    }
+    i += 1
+}
+
+if input_path == "" {
+    fail("usage: shipyard ORDERS.csv [--log PATH] [--verbose] [--debug|--trace]")
+}
+
+start_logger(log_path)
+configure(verbose, level)
+log_info("shipyard", "boot", concat(
+    "starting shipyard input=", input_path, " log=", log_path
+))
+
+monitor {
+    summary = run(input_path)
+
+    log_info("shipyard", "summary", concat(
+        "orders_read=", cast[string](summary.orders_read),
+        " validated=", cast[string](summary.validated),
+        " reserved=", cast[string](summary.reserved),
+        " shipped=", cast[string](summary.shipped),
+        " rejected=", cast[string](summary.rejected),
+        " log_lines=", cast[string](summary.log_lines)
+    ))
+
+    terminal = open(io_type::tty, out)
+    write(terminal, concat(
+        "shipyard complete\n",
+        "  orders read:  ", cast[string](summary.orders_read), "\n",
+        "  validated:    ", cast[string](summary.validated), "\n",
+        "  shipped:      ", cast[string](summary.shipped), "\n",
+        "  rejected:     ", cast[string](summary.rejected), "\n",
+        "  log lines:    ", cast[string](summary.log_lines), "\n",
+        "  log file:     ", log_path, "\n"
+    ))
+} trap(err: exception) {
+    log_error("shipyard", "fatal", cast[string](err))
+    fail(concat("shipyard failed: ", cast[string](err)))
+}
+
+stop_logger()

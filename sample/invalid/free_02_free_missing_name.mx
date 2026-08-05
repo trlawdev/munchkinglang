@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// `free` is the alias of `delete` and also requires a buffer name
+free

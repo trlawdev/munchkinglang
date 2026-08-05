@@ -1,0 +1,48 @@
+package types
+
+// Shared enums and objects for the chat relay.
+// open() produces socket / file / term handles (see sample/io.mx).
+
+enum io_type {
+    socket,
+    file,
+    tty
+}
+
+enum af_type {
+    inet,
+    inet6
+}
+
+enum sock_type {
+    stream, // TCP
+    dgram   // UDP
+}
+
+enum role {
+    Guest,
+    Member,
+    Admin
+}
+
+enum command {
+    Nick,
+    Say,
+    Who,
+    Quit,
+    Shutdown,
+    Unknown
+}
+
+object Client {
+    handle: socket,
+    addr: string,
+    nick: string,
+    role: role
+}
+
+object Message {
+    from: string,
+    body: string,
+    stamp: int
+}

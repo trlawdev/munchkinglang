@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected expression
+// an assignment target must be a plain name, so an indexed
+// element cannot be assigned to
+items[0] = 5

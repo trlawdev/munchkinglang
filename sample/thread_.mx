@@ -1,0 +1,36 @@
+package thread_
+
+terminate = false
+q = queue(100) // queue is a keyword
+lock lck; //lock is a keyword
+
+
+producer = lambda (): void => { //lambda is a keyword
+    count = 0
+    loop !terminate {
+        count += 1
+        acquire lck // acquire is a keyword, declares entry into a critical section
+        push(q, count) // push is a keyword, pushes a value into a queue
+        release lck // release is a keyword, declares exit of critical sectionn, lock is freed
+        println("Value pushed: ", count, '\n')
+    }
+}
+
+consumer = lambda (): void => {
+    loop !terminate {
+        acquire lck
+        value = pop(q) // pop is a keyword
+        release lck
+        print("Value popped: ", value, '\n')
+    }
+}
+
+producer_thread = thread(producer) // thread is a keyword, spins a new thread, can also take arguments
+consumer_thread = thread(consumer)
+
+lambda (): void => {
+    sleep(3000) // sleep is a keyword, takes the number of milliseconds, blocks for a given number of milliseconds
+    terminate = true
+}()
+
+join [producer_thread, consumer_thread] //join is a keyword, will block, till each thread concludes its task

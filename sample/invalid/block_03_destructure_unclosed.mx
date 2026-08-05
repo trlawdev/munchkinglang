@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `}`
+// the braced destructuring target list is never closed
+{a, b = read(sock)

@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `{`
+// monitor is followed immediately by its protected block
+monitor risky() trap(e: exception) {
+}

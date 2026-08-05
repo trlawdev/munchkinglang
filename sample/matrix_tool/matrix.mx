@@ -1,0 +1,151 @@
+package matrix
+
+// Matrix utilities for integer matrices stored as nested arrays (rows of columns).
+
+func rows(m: [[int]]): int {
+    return m.len
+}
+
+func cols(m: [[int]]): int {
+    if m.len == 0 {
+        return 0
+    }
+    return m[0].len
+}
+
+func same_shape(a: [[int]], b: [[int]]): bool {
+    return rows(a) == rows(b) && cols(a) == cols(b)
+}
+
+func identity(size: int): [[int]] {
+    matrix = []
+    row_index = 0
+    loop row_index < size {
+        row = []
+        col_index = 0
+        loop col_index < size {
+            cell = 0
+            if row_index == col_index {
+                cell = 1
+            }
+            row = row + [cell]
+            col_index += 1
+        }
+        matrix = matrix + [row]
+        row_index += 1
+    }
+    return matrix
+}
+
+func add(a: [[int]], b: [[int]]): [[int]] {
+    if !same_shape(a, b) {
+        fail("matrix add requires matching dimensions")
+    }
+
+    result = []
+    row_index = 0
+    loop row_index < rows(a) {
+        left_row = a[row_index]
+        right_row = b[row_index]
+        out_row = []
+        col_index = 0
+        loop col_index < cols(a) {
+            out_row = out_row + [left_row[col_index] + right_row[col_index]]
+            col_index += 1
+        }
+        result = result + [out_row]
+        row_index += 1
+    }
+    return result
+}
+
+func multiply(a: [[int]], b: [[int]]): [[int]] {
+    a_rows = rows(a)
+    a_cols = cols(a)
+    b_rows = rows(b)
+    b_cols = cols(b)
+
+    if a_cols != b_rows {
+        fail("matrix multiply requires inner dimensions to match")
+    }
+
+    result = []
+    row_index = 0
+    loop row_index < a_rows {
+        out_row = []
+        col_index = 0
+        loop col_index < b_cols {
+            sum = 0
+            inner = 0
+            loop inner < a_cols {
+                sum += a[row_index][inner] * b[inner][col_index]
+                inner += 1
+            }
+            out_row = out_row + [sum]
+            col_index += 1
+        }
+        result = result + [out_row]
+        row_index += 1
+    }
+    return result
+}
+
+func transpose(m: [[int]]): [[int]] {
+    if m.len == 0 {
+        return []
+    }
+
+    result = []
+    col_index = 0
+    loop col_index < cols(m) {
+        out_row = []
+        row_index = 0
+        loop row_index < rows(m) {
+            out_row = out_row + [m[row_index][col_index]]
+            row_index += 1
+        }
+        result = result + [out_row]
+        col_index += 1
+    }
+    return result
+}
+
+func trace(m: [[int]]): int {
+    if !same_shape(m, identity(rows(m))) {
+        fail("trace requires a square matrix")
+    }
+
+    total = 0
+    index = 0
+    loop index < rows(m) {
+        total += m[index][index]
+        index += 1
+    }
+    return total
+}
+
+func print_matrix(label: string, m: [[int]]): void {
+    println(label)
+    row_index = 0
+    loop row_index < rows(m) {
+        row = m[row_index]
+        line = ""
+        col_index = 0
+        loop col_index < cols(m) {
+            if col_index > 0 {
+                line = concat(line, " ")
+            }
+            line = concat(line, cast[string](row[col_index]))
+            col_index += 1
+        }
+        println(line)
+        row_index += 1
+    }
+}
+
+// Scale one row with SIMD (AVX2) and print the lane vector.
+func print_simd_scaled_row(row: [int], factor: int): void {
+    scaled = simd([factor] * row.len) * simd(row)
+    print("simd scaled row: ", scaled)
+    println("")
+}

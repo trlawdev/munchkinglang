@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected identifier
+lock 42

@@ -1,0 +1,7 @@
+package bad
+
+// expected error: `load_package` is only allowed at the top of the file, before any other statement
+// imports may not resume once a statement has interrupted the header
+load_package io
+x = 1
+load_package string

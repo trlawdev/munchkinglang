@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `)` after trap parameter
+monitor {
+    risky()
+} trap(e: exception {
+}

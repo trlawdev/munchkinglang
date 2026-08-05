@@ -1,0 +1,82 @@
+package blocks_and_nesting
+
+// a bare block is a statement
+{
+    scoped = 5
+    print(scoped)
+}
+
+// an empty bare block
+{
+}
+
+// bare blocks nest
+{
+    {
+        {
+            deep = 1
+        }
+    }
+}
+
+// every statement kind inside a bare block
+{
+    x = 1
+    x += 1
+    print(x)
+    if x > 0 {
+        break
+    }
+    loop x < 10 {
+        x += 1
+    }
+    enum Local {
+        A
+    }
+    object Pair {
+        a: int,
+        b: int
+    }
+    func helper(): int {
+        return 0
+    }
+    lock local_lock
+    acquire local_lock
+    release local_lock
+    buff = alloc [4] []
+    delete buff
+    monitor {
+        risky()
+    } trap(e: exception) {
+    }
+    match value {
+        case Local::A {
+        }
+    }
+}
+
+// deeply interleaved control flow, declarations and concurrency
+func orchestrate(items: [int]): void {
+    index = 0
+    loop index != items.len {
+        monitor {
+            if items[index] % 2 == 0 {
+                worker = thread(lambda (n: int): void => {
+                    match classify(n) {
+                        case Parity::Even {
+                            n -> results_pipe
+                        }
+                    }
+                }, {items[index]})
+                join [worker]
+            } else {
+                acquire log_lock
+                print("odd: ", items[index])
+                release log_lock
+            }
+        } trap(e: exception) {
+            fail("iteration failed")
+        }
+        index += 1
+    }
+}

@@ -1,0 +1,27 @@
+package arithmetic_precedence
+
+// each arithmetic operator on its own
+add = 1 + 2
+sub = 5 - 3
+mul = 4 * 2
+div = 8 / 2
+mod = 9 % 4
+
+// multiplicative binds tighter than additive
+mixed = 1 + 2 * 3
+mixed2 = 1 * 2 + 3
+mixed3 = 10 - 6 / 3 % 2
+
+// left associativity
+chain_add = 1 + 2 + 3 + 4
+chain_sub = 10 - 3 - 2
+chain_mul = 2 * 3 * 4
+chain_div = 100 / 5 / 2
+
+// parentheses override precedence
+grouped = (1 + 2) * 3
+nested_groups = ((1 + 2) * (3 - 1)) / 2
+deeply_nested = ((((1))))
+
+// operands may be any primary expression
+with_calls = double(2) + items[1] * obj.field

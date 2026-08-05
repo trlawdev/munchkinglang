@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected identifier
+func (a: int): int {
+    return a
+}

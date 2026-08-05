@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected `]` after typed array values
+x = [int][1, 2

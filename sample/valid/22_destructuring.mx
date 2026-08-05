@@ -1,0 +1,40 @@
+package destructuring
+
+// bare multi-target form
+quotient, remainder = divide(9, 2)
+a, b, c = triple()
+
+// braced form
+{data, addr} = read(server, 1024)
+{first, second} = pair()
+
+// `_` discards a value in either form
+{resp, _} = read(client, 1024)
+{_, addr} = recv(sock)
+head, _ = split(text)
+_, tail = split(text)
+first, _, third = triple()
+_, _, _ = triple()
+
+// compound assignment with multiple targets
+x, y += delta()
+{p, q} += offsets()
+
+// the value may be any expression
+one, two = [1, 2]
+lo, hi = {0, 100}
+m, n = obj.bounds
+i, j = matrix[0]
+u, v = cast[tuple[int, int]](raw)
+s, t = <- coordinate_pipe
+
+// destructuring inside nested scopes
+func handler(): void {
+    code, message = status()
+    loop retry {
+        {ok, err} = attempt()
+        if !ok {
+            break
+        }
+    }
+}

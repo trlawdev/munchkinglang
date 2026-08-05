@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `]` after join list
+// join reads bare names, so it stops before the `[` of an index
+// expression rather than evaluating it
+join [threads[0]]

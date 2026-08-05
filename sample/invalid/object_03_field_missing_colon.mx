@@ -1,0 +1,8 @@
+package bad
+
+// expected error: expected `:` after field name
+// every field must be annotated with a type
+object Person {
+    name,
+    age: int
+}

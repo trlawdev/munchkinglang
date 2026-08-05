@@ -6,56 +6,71 @@
 namespace munx
 {
 
+    /// Lexical token kinds produced by the munx lexer.
     enum class token_type
     {
-        KEYWORD,
-        SYMBOL,
+        // identifiers / reserved
+        SYMBOL,  ///< User or builtin identifier (not a structural keyword).
+        KEYWORD, ///< Structural keyword from munx::keywords().
 
-        OPEN_SQUARE_BRACE,
-        CLOSE_SQUARE_BRACE,
-        COLON,
-        OPEN_CURLY_BRACE,
-        CLOSE_CURLY_BRACE,
-        ASSIGN,
-        EQUAL,
-        NOT_EQUAL,
-        AND,
-        OR,
-        NOT,
-        BITWISE_OR,
-        BITWISE_AND,
-        BITWISE_NOT,
-        BITWISE_XOR,
+        // literals
+        INT_LITERAL,    ///< Signed 64-bit integer literal.
+        FLOAT_LITERAL,  ///< Floating-point literal (digits on both sides of `.`).
+        STRING_LITERAL, ///< Double-quoted string with escapes.
+        CHAR_LITERAL,   ///< Single-quoted character with escapes.
+        BOOL_LITERAL,   ///< `true` or `false`.
+        NULL_LITERAL,   ///< `null`.
+        REGEX_LITERAL,  ///< Raw regex `r"..."`.
 
-        CHAR_LITERAL,
-        INT_LITERAL,
-        STRING_LITERAL,
-        FLOAT_LITERAL,
-        BOOLEAN_LITERAL,
+        // punctuation
+        LPAREN,    ///< `(`
+        RPAREN,    ///< `)`
+        LBRACE,    ///< `{`
+        RBRACE,    ///< `}`
+        LBRACKET,  ///< `[`
+        RBRACKET,  ///< `]`
+        COMMA,     ///< `,`
+        COLON,     ///< `:`
+        SEMICOLON, ///< `;`
+        DOT,       ///< `.`
+        SCOPE,     ///< `::`
 
-        ENUM_SCOPE_RESOLUTION_OPERATOR, //::
-        OPEN_BRACE,
-        CLOSE_BRACE,
-        LINE_TERMINATOR,
-        COMMA,
-        FIELD_ACCESS_OPERATOR,
-        MODULO_OPERATOR,
+        // operators
+        ASSIGN,       ///< `=`
+        ADD_ASSIGN,   ///< `+=`
+        EQ,           ///< `==`
+        NE,           ///< `!=`
+        LT,           ///< `<`
+        GT,           ///< `>`
+        LE,           ///< `<=`
+        GE,           ///< `>=`
+        PLUS,         ///< `+`
+        MINUS,        ///< `-`
+        STAR,         ///< `*`
+        SLASH,        ///< `/`
+        PERCENT,      ///< `%`
+        BANG,         ///< `!`
+        AMP,          ///< `&` (lexed; no binary parse rule yet)
+        PIPE,         ///< `|` (lexed; no binary parse rule yet)
+        CARET,        ///< `^` (lexed; no binary parse rule yet)
+        TILDE,        ///< `~`
+        AND_AND,      ///< `&&`
+        OR_OR,        ///< `||`
+        ARROW,        ///< `=>` (lambda body)
+        PIPE_INSERT,  ///< `->` (pipe write)
+        PIPE_EXTRACT, ///< `<-` (pipe read)
 
-        ADD,
-        MUL,
-        DIV,
-        SUB,
-
-        IF,
-        IF_ELSE,
-        ELSE,
-        LOOP,
+        END, ///< Sentinel end-of-input token.
     };
 
+    /// A single lexeme with 1-based source coordinates and a typed payload.
     struct token
     {
-        token_type type;
+        long long line;   ///< 1-based line of the token start.
+        long long column; ///< 1-based column of the token start.
+        token_type type;  ///< Token kind.
+        /// Payload: integer, float, or string (lexeme / decoded literal text).
         std::variant<long long, long double, std::string> value;
     };
 
-}
+} // namespace munx

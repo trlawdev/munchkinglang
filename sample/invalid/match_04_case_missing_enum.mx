@@ -1,0 +1,9 @@
+package bad
+
+// expected error: expected identifier
+// the enum name before `::` is missing
+match paint {
+    case ::Red {
+        print("red")
+    }
+}

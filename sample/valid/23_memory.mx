@@ -1,0 +1,33 @@
+package memory
+
+// alloc takes a capacity and a list of initial values
+buff = alloc [100] [1, 2, 3]
+
+// the initializer list may be empty
+zeroed = alloc [64] []
+
+// a single initial value
+single = alloc [1] [0]
+
+// the capacity may be any expression
+computed = alloc [size * 2] [1]
+from_member = alloc [config.capacity] []
+from_call = alloc [next_size()] []
+
+// initial values may be any expression
+mixed = alloc [8] ['a', 2, "three", 4.0, true, null]
+nested = alloc [4] [compute(1), items[0], obj.field, -1, a + b]
+of_objects = alloc [2] [Person("A", 1, 1.0, Gender::Male), person]
+
+// alloc is an expression, so it can appear anywhere one is expected
+in_call = consume(alloc [8] [1])
+in_tuple = {alloc [2] [], alloc [2] []}
+
+// releasing memory: `delete` and `free` are interchangeable
+delete buff
+free zeroed
+delete single
+free computed
+
+// both are expressions, usable as statements or inside a call
+consume(delete mixed)

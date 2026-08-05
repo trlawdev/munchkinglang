@@ -1,0 +1,53 @@
+package semicolons_and_layout
+
+// semicolons are optional after a statement
+a = 1
+b = 2;
+
+// several statements on one line, separated by semicolons
+c = 3; d = 4; print(c);
+
+// after a declaration
+func f(): int {
+    return 1;
+};
+
+enum E {
+    A
+};
+
+object O {
+    x: int
+};
+
+// inside a block
+{
+    e = 5;
+    print(e);
+}
+
+// whitespace is insignificant: tabs, extra blank lines and
+// unusual indentation all parse the same way
+
+
+	tabbed	=	6
+
+spaced   =   7   +   8
+
+// a compact function with minimal spacing
+func g(x:int):int{return x*2}
+
+// a sprawling call spread over several lines
+result = compute(
+    1,
+    2 + 3,
+    "four"
+)
+
+// an if statement with the brace on the following line's terms
+if a
+    ==
+    1
+{
+    print("one")
+}

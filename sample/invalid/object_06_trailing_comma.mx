@@ -1,0 +1,8 @@
+package bad
+
+// expected error: expected identifier
+// a trailing comma leaves the list expecting another field
+object Person {
+    name: string,
+    age: int,
+}

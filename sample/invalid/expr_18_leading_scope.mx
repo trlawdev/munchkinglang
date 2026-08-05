@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// `::` cannot begin an expression; an enum name must precede it
+x = ::Male

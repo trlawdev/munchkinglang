@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `}` after match cases
+match paint {
+    case Color::Red {
+        print("red")
+    }

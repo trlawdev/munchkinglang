@@ -1,0 +1,23 @@
+package pipehub_publisher
+
+// Publish events to subscribers on other munx VM processes.
+//
+//   ./munxc --run sample/pipehub/publisher.mx "hello room"
+//
+// Start one or more subscribers first:
+//   ./munxc --run sample/pipehub/subscriber.mx
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+CHANNEL = "pipehub.events"
+
+if argv.len < 1 {
+    fail("usage: publisher <message>")
+}
+
+out_pipe = pipe(CHANNEL, out)
+message = argv[0]
+
+message -> out_pipe
+println(concat("published: ", message))

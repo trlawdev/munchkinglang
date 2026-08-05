@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// a trailing comma leaves the list expecting another package name
+load_packages {lib1, lib2,}

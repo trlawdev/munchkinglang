@@ -1,0 +1,68 @@
+package edge_cases
+
+// every empty collection form
+empty_array = []
+empty_typed_array = [int][]
+empty_tuple = {}
+empty_alloc = alloc [0] []
+
+// empty declaration bodies
+enum NoMembers {}
+
+object NoFields {}
+
+func no_statements(): void {
+}
+
+// an empty tuple type
+func returns_empty_tuple(): tuple[] {
+    return {}
+}
+
+// a match with no cases
+match value {
+}
+
+// an empty join list
+join []
+
+// identifiers may begin with, and consist of, underscores
+_ = ignored()
+_leading = 1
+trailing_ = 2
+__dunder__ = 3
+mixed_123 = 4
+
+// `_` is a discard only in a destructuring target position;
+// elsewhere it is an ordinary identifier
+print(_)
+
+// a keyword is accepted wherever an identifier is expected, so
+// these names shadow language keywords
+func loop(): void {
+}
+
+match_result = 1
+object_count = 2
+enum_like = Direction::case
+
+// a keyword is also accepted as a member or enum-member name
+keyword_member = value.func
+
+// the largest integer literal that fits in 64 bits
+biggest = 9223372036854775807
+
+// a float with many fractional digits
+precise = 0.000000000001
+
+// `.` after an integer is a member access, not a decimal point
+int_member = 1.len
+
+// a call on the result of a call, then indexed, then accessed
+chained = factory()(1)[0].field
+
+// deeply nested grouping
+deep = ((((((1 + 2))))))
+
+// a very long operator chain exercising every precedence level
+long_chain = !a && b < c + d * e % f || -g >= h && ~i != j

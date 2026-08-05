@@ -1,0 +1,51 @@
+package logscope
+load_packages {types, pipeline, report}
+
+// Concurrent access-log analyzer.
+//
+// Real-world shape:
+//   - streams a potentially large log file from disk
+//   - parses records with a fixed worker pool
+//   - moves work through pipes with explicit completion sentinels
+//   - aggregates HTTP status, traffic, and latency statistics
+//   - protects shared summary state with a lock
+//   - writes either a terminal report or an output file
+//
+// Compile from the repository root:
+//   ./munxc sample/logscope/main.mx
+//
+// Intended runtime usage once the VM is available:
+//   munx-run sample/logscope/main.mxb -- access.log
+//   munx-run sample/logscope/main.mxb -- access.log --output report.txt
+
+if argv.len == 0 {
+    fail("usage: logscope INPUT [--output PATH]")
+}
+
+input_path = argv[0]
+output_path = ""
+
+i = 1
+loop i < argv.len {
+    if argv[i] == "--output" {
+        if i + 1 >= argv.len {
+            fail("--output requires a path")
+        }
+        output_path = argv[i + 1]
+        i += 1
+    } else if argv[i] == "--help" {
+        terminal = open(io_type::tty, out)
+        write(terminal, "usage: logscope INPUT [--output PATH]\n")
+        return
+    } else {
+        fail(concat("unknown option: ", argv[i]))
+    }
+    i += 1
+}
+
+monitor {
+    summary = analyze(input_path)
+    write_report(summary, output_path)
+} trap(err: exception) {
+    fail(concat("analysis failed: ", cast[string](err)))
+}

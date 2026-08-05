@@ -1,0 +1,48 @@
+package objects
+
+// no fields
+object Empty {}
+
+// one field
+object Wrapper {
+    value: int
+}
+
+// several fields covering primitive, named and compound types
+object Person {
+    name: string,
+    age: int,
+    height: float,
+    initial: character,
+    active: bool,
+    gender: Gender,
+    scores: [int],
+    location: tuple[float, float],
+    tags: [tuple[string, int]],
+    handle: socket,
+    last_error: exception
+}
+
+// fields on a single line
+object Point {
+    x: float, y: float
+}
+
+// construction, which is an ordinary call expression
+person = Person("Abdul", 10, 15.45, 'A', true, Gender::Male, [int][1], {0.0, 0.0}, [], sock, err)
+origin = Point(0.0, 0.0)
+
+// field access; note that an assignment target is always a plain
+// name, so a field is read into a local rather than assigned directly
+name = person.name
+nested_field = person.location
+age = person.age + 1
+
+// objects passed to and returned from functions
+func show_person(p: Person): void {
+    println(p.name)
+}
+
+func make_point(): Point {
+    return Point(1.0, 2.0)
+}

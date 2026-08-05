@@ -1,0 +1,38 @@
+package parser
+load_package types
+
+// Input format (one request per line):
+//   METHOD PATH STATUS BYTES DURATION_MS
+//
+// Example:
+//   GET /api/orders 200 812 14.75
+
+func malformed_record(): LogRecord {
+    return LogRecord("", "", 0, 0, 0.0, true)
+}
+
+func parse_record(line: string): LogRecord {
+    fields = split(trim(line), " ")
+    if fields.len != 5 {
+        return malformed_record()
+    }
+
+    monitor {
+        method = fields[0]
+        path = fields[1]
+        status = cast[int](fields[2])
+        bytes = cast[int](fields[3])
+        duration_ms = cast[float](fields[4])
+
+        if status < 100 || status > 599 {
+            return malformed_record()
+        }
+        if bytes < 0 || duration_ms < 0.0 {
+            return malformed_record()
+        }
+
+        return LogRecord(method, path, status, bytes, duration_ms, false)
+    } trap(err: exception) {
+        return malformed_record()
+    }
+}

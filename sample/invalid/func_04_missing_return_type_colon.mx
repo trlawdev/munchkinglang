@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `:` before return type
+// a return type is mandatory, even for void functions
+func f() {
+    return 1
+}

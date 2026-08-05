@@ -1,0 +1,86 @@
+package functions
+
+// no parameters
+func no_params(): void {
+    return
+}
+
+// one parameter
+func double(param: int): int {
+    return param * 2
+}
+
+// many parameters
+func many(a: int, b: float, c: string, d: character, e: bool): bool {
+    return e
+}
+
+// empty body
+func empty(): void {
+}
+
+// return with no value, and bare return as an early exit
+func early_exit(flag: bool): void {
+    if flag {
+        return
+    }
+    print("continuing")
+}
+
+// returning each kind of expression
+func return_literal(): int {
+    return 42
+}
+
+func return_tuple(dividend: int, divisor: int): tuple[int, int] {
+    return {dividend / divisor, dividend % divisor}
+}
+
+func return_array(): [int] {
+    return [int][1, 2, 3]
+}
+
+func return_call(a: int): int {
+    return double(a)
+}
+
+func return_complex(a: int, b: int): bool {
+    return a * 2 + b < 10 && !flag
+}
+
+// recursion and mutual reference
+func factorial(n: int): int {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+// a function declared inside another function's body
+func outer(): int {
+    func inner(a: int): int {
+        return a + 1
+    }
+    return inner(1)
+}
+
+// declarations nested inside control flow
+func with_nested_decls(flag: bool): void {
+    if flag {
+        enum Local {
+            A,
+            B
+        }
+        object Pair {
+            a: int,
+            b: int
+        }
+        func helper(): int {
+            return 0
+        }
+    }
+}
+
+// calling the declared functions
+show = double(21)
+divide_result = return_tuple(9, 2)

@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `}` after match cases
+// only `case` arms may appear inside a match body
+match paint {
+    print("not a case")
+}

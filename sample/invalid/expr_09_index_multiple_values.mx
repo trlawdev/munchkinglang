@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `]` after index
+// an index takes a single expression; use chained brackets instead
+x = matrix[1, 2]

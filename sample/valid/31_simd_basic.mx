@@ -1,0 +1,8 @@
+package simd_basic
+
+buff = [1, 2, 3, 4]
+factor = 10
+a = simd([factor] * buff.len)
+b = simd(buff)
+product = a * b
+print(product)

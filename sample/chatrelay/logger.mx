@@ -1,0 +1,37 @@
+package logger
+load_package types
+
+// Asynchronous transcript writer.
+// Handlers push lines into `log_pipe`; a dedicated worker drains it to disk.
+
+log_pipe = pipe("chatrelay.log", out)
+running = true
+
+func log_line(line: string): void {
+    line -> log_pipe
+}
+
+func start_logger(path: string): void {
+    worker = thread(lambda (dest: string): void => {
+        monitor {
+            reader = pipe("chatrelay.log", in)
+            log_file = open(io_type::file, dest, out)
+            loop running {
+                entry = <- reader
+                if entry == null {
+                    break
+                }
+                stamp = cast[string](process.id())
+                write(log_file, concat("[", stamp, "] ", entry, "\n"))
+            }
+            close(log_file)
+        } trap(err: exception) {
+            fail(concat("logger failed: ", cast[string](err)))
+        }
+    }, {path})
+}
+
+func stop_logger(): void {
+    running = false
+    "" -> log_pipe
+}

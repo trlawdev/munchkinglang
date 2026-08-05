@@ -1,0 +1,151 @@
+package logging
+load_package types
+
+// Asynchronous, structured logger used by every package in shipyard.
+// Lines are pushed into `log_pipe`; a dedicated worker drains them to disk
+// (and optionally mirrors them to the terminal when `--verbose` is set).
+
+log_pipe = pipe("shipyard.log", out)
+running = true
+mirror_terminal = false
+minimum_level = log_level::Info
+lines_emitted = 0
+
+lock counter_lock
+
+func level_rank(level: log_level): int {
+    match level {
+        case log_level::Trace {
+            return 0
+        }
+        case log_level::Debug {
+            return 1
+        }
+        case log_level::Info {
+            return 2
+        }
+        case log_level::Warn {
+            return 3
+        }
+        case log_level::Error {
+            return 4
+        }
+    }
+    return 2
+}
+
+func level_name(level: log_level): string {
+    match level {
+        case log_level::Trace {
+            return "TRACE"
+        }
+        case log_level::Debug {
+            return "DEBUG"
+        }
+        case log_level::Info {
+            return "INFO"
+        }
+        case log_level::Warn {
+            return "WARN"
+        }
+        case log_level::Error {
+            return "ERROR"
+        }
+    }
+    return "INFO"
+}
+
+func configure(verbose: bool, level: log_level): void {
+    mirror_terminal = verbose
+    minimum_level = level
+    log_info("logging", "boot", concat(
+        "logger configured verbose=", cast[string](verbose),
+        " minimum=", level_name(level)
+    ))
+}
+
+func should_emit(level: log_level): bool {
+    return level_rank(level) >= level_rank(minimum_level)
+}
+
+func bump_counter(): void {
+    acquire counter_lock
+    lines_emitted += 1
+    release counter_lock
+}
+
+func format_line(level: log_level, component: string, correlation: string, message: string): string {
+    stamp = cast[string](process.id())
+    return concat(
+        "[", stamp, "] ",
+        level_name(level), " ",
+        component, " ",
+        correlation, " :: ",
+        message
+    )
+}
+
+func emit(level: log_level, component: string, correlation: string, message: string): void {
+    if !should_emit(level) {
+        return
+    }
+    line = format_line(level, component, correlation, message)
+    bump_counter()
+    if mirror_terminal {
+        println(line)
+    }
+    line -> log_pipe
+}
+
+func log_trace(component: string, correlation: string, message: string): void {
+    emit(log_level::Trace, component, correlation, message)
+}
+
+func log_debug(component: string, correlation: string, message: string): void {
+    emit(log_level::Debug, component, correlation, message)
+}
+
+func log_info(component: string, correlation: string, message: string): void {
+    emit(log_level::Info, component, correlation, message)
+}
+
+func log_warn(component: string, correlation: string, message: string): void {
+    emit(log_level::Warn, component, correlation, message)
+}
+
+func log_error(component: string, correlation: string, message: string): void {
+    emit(log_level::Error, component, correlation, message)
+}
+
+func start_logger(path: string): void {
+    log_info("logging", "boot", concat("starting log worker for ", path))
+    worker = thread(lambda (dest: string): void => {
+        monitor {
+            reader = pipe("shipyard.log", in)
+            log_file = open(io_type::file, dest, out)
+            loop running {
+                entry = <- reader
+                if entry == null {
+                    break
+                }
+                write(log_file, concat(entry, "\n"))
+            }
+            close(log_file)
+        } trap(err: exception) {
+            fail(concat("logger worker failed: ", cast[string](err)))
+        }
+    }, {path})
+}
+
+func stop_logger(): void {
+    log_info("logging", "shutdown", "draining log pipe")
+    running = false
+    "" -> log_pipe
+}
+
+func lines_written(): int {
+    acquire counter_lock
+    count = lines_emitted
+    release counter_lock
+    return count
+}

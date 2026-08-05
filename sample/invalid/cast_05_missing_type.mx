@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// the target type is missing
+i = cast[]("42")

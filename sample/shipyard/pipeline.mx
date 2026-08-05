@@ -1,0 +1,239 @@
+package pipeline
+load_packages {types, logging, catalog, inventory}
+
+// Order-fulfillment pipeline. Processing is sequential so every log line appears
+// in deterministic order; the structure mirrors a concurrent design (ingest,
+// validate, inventory, route, pack, ship, audit) without worker-pool complexity.
+
+lock summary_lock
+orders_read = 0
+validated_count = 0
+reserved_count = 0
+shipped_count = 0
+rejected_count = 0
+
+func bump(field: string): void {
+    acquire summary_lock
+    if field == "read" {
+        orders_read += 1
+    } else if field == "validated" {
+        validated_count += 1
+    } else if field == "reserved" {
+        reserved_count += 1
+    } else if field == "shipped" {
+        shipped_count += 1
+    } else if field == "rejected" {
+        rejected_count += 1
+    }
+    release summary_lock
+}
+
+func parse_csv_line(line: string): OrderLine {
+    trimmed = trim(line)
+    parts = split(trimmed, ",")
+    if parts.len < 5 {
+        log_warn("pipeline", "parse", concat("malformed csv (", cast[string](parts.len), " fields): ", trimmed))
+        return OrderLine("", "", 0, "", order_priority::Standard)
+    }
+    order_id = parts[0]
+    sku = parts[1]
+    qty = cast[int](parts[2])
+    customer = parts[3]
+    priority = parse_priority(parts[4])
+    log_trace("pipeline", order_id, concat(
+        "parsed sku=", sku, " qty=", cast[string](qty), " customer=", customer
+    ))
+    return OrderLine(order_id, sku, qty, customer, priority)
+}
+
+func validate_line(line: OrderLine): FulfillmentRecord {
+    correlation = line.order_id
+    log_debug("pipeline", correlation, "validation started")
+
+    if line.order_id == "" {
+        log_error("pipeline", correlation, "missing order id")
+        return FulfillmentRecord("", line.sku, line.qty, line.customer, line.priority,
+            fulfillment_status::Rejected, "", "missing order id")
+    }
+
+    if !is_known_sku(line.sku) {
+        log_error("pipeline", correlation, concat("unknown sku ", line.sku))
+        return FulfillmentRecord(line.order_id, line.sku, line.qty, line.customer, line.priority,
+            fulfillment_status::Rejected, "", "unknown sku")
+    }
+
+    if !validate_qty(line.qty) {
+        log_error("pipeline", correlation, "invalid quantity")
+        return FulfillmentRecord(line.order_id, line.sku, line.qty, line.customer, line.priority,
+            fulfillment_status::Rejected, "", "invalid quantity")
+    }
+
+    if !validate_customer(line.customer) {
+        log_error("pipeline", correlation, "invalid customer")
+        return FulfillmentRecord(line.order_id, line.sku, line.qty, line.customer, line.priority,
+            fulfillment_status::Rejected, "", "invalid customer")
+    }
+
+    on_hand = stock_available(line.sku)
+    if on_hand < line.qty {
+        log_warn("pipeline", correlation, concat(
+            "insufficient stock for ", line.sku, " need=", cast[string](line.qty),
+            " have=", cast[string](on_hand)
+        ))
+        return FulfillmentRecord(line.order_id, line.sku, line.qty, line.customer, line.priority,
+            fulfillment_status::Rejected, "", "insufficient stock")
+    }
+
+    log_info("pipeline", correlation, "validation passed")
+    return FulfillmentRecord(line.order_id, line.sku, line.qty, line.customer, line.priority,
+        fulfillment_status::Validated, "", "")
+}
+
+func choose_warehouse(record: FulfillmentRecord): string {
+    match record.priority {
+        case order_priority::Overnight {
+            log_debug("pipeline", record.order_id, "routing to WH-EAST (overnight)")
+            return "WH-EAST"
+        }
+        case order_priority::Express {
+            log_debug("pipeline", record.order_id, "routing to WH-CENTRAL (express)")
+            return "WH-CENTRAL"
+        }
+        case order_priority::Standard {
+            log_debug("pipeline", record.order_id, "routing to WH-WEST (standard)")
+            return "WH-WEST"
+        }
+    }
+    return "WH-WEST"
+}
+
+func fulfill_record(record: FulfillmentRecord): FulfillmentRecord {
+    correlation = record.order_id
+    log_info("pipeline", correlation, "fulfillment started")
+
+    if !stock_reserve(record.sku, record.qty, correlation) {
+        log_error("pipeline", correlation, "reservation failed during fulfill")
+        return FulfillmentRecord(record.order_id, record.sku, record.qty, record.customer, record.priority,
+            fulfillment_status::Rejected, "", "reservation race")
+    }
+
+    bump("reserved")
+    log_info("pipeline", correlation, concat(
+        "stock reserved sku=", record.sku, " qty=", cast[string](record.qty)
+    ))
+
+    warehouse = choose_warehouse(record)
+    log_info("pipeline", correlation, concat("routed to ", warehouse))
+
+    log_debug("pipeline", correlation, "packing started")
+    log_debug("pipeline", correlation, "packing complete")
+
+    bump("shipped")
+    log_info("pipeline", correlation, concat(
+        "shipped from ", warehouse, " to ", record.customer
+    ))
+    return FulfillmentRecord(record.order_id, record.sku, record.qty, record.customer, record.priority,
+        fulfillment_status::Shipped, warehouse, "")
+}
+
+func audit_record(record: FulfillmentRecord): void {
+    match record.status {
+        case fulfillment_status::Shipped {
+            log_info("pipeline", record.order_id, concat(
+                "AUDIT shipped sku=", record.sku,
+                " qty=", cast[string](record.qty),
+                " warehouse=", record.warehouse
+            ))
+        }
+        case fulfillment_status::Rejected {
+            log_warn("pipeline", record.order_id, concat(
+                "AUDIT rejected reason=", record.rejection_reason
+            ))
+        }
+        case fulfillment_status::Pending {
+            log_debug("pipeline", record.order_id, "AUDIT pending (unexpected)")
+        }
+        case fulfillment_status::Validated {
+            log_debug("pipeline", record.order_id, "AUDIT validated (unexpected)")
+        }
+        case fulfillment_status::Reserved {
+            log_debug("pipeline", record.order_id, "AUDIT reserved (unexpected)")
+        }
+        case fulfillment_status::Routed {
+            log_debug("pipeline", record.order_id, "AUDIT routed (unexpected)")
+        }
+        case fulfillment_status::Packed {
+            log_debug("pipeline", record.order_id, "AUDIT packed (unexpected)")
+        }
+    }
+}
+
+func process_line(line: string, line_no: int): void {
+    if line_no == 1 {
+        log_debug("pipeline", "ingest", concat("skipping header: ", line))
+        return
+    }
+    if trim(line) == "" {
+        log_trace("pipeline", "ingest", concat("skipping blank line ", cast[string](line_no)))
+        return
+    }
+
+    log_trace("pipeline", "ingest", concat("read line ", cast[string](line_no), ": ", line))
+    parsed = parse_csv_line(line)
+    bump("read")
+
+    validated = validate_line(parsed)
+    if validated.status == fulfillment_status::Rejected {
+        bump("rejected")
+        audit_record(validated)
+        return
+    }
+
+    bump("validated")
+    shipped = fulfill_record(validated)
+    if shipped.status == fulfillment_status::Rejected {
+        bump("rejected")
+    }
+    audit_record(shipped)
+}
+
+func run(path: string): RunSummary {
+    log_info("pipeline", "run", concat("starting fulfillment run for ", path))
+    snapshot_levels()
+
+    monitor {
+        log_info("pipeline", "ingest", concat("opening order file ", path))
+        source = open(io_type::file, path, in)
+        line_no = 0
+        loop {
+            line = readln(source)
+            if line == null {
+                break
+            }
+            line_no += 1
+            process_line(line, line_no)
+        }
+        close(source)
+        log_info("pipeline", "ingest", concat(
+            "finished reading ", cast[string](line_no), " lines from ", path
+        ))
+    } trap(err: exception) {
+        log_error("pipeline", "ingest", concat("read failure: ", cast[string](err)))
+        fail(concat("cannot read ", path, ": ", cast[string](err)))
+    }
+
+    snapshot_levels()
+    log_info("pipeline", "run", "processing complete")
+
+    acquire summary_lock
+    summary = RunSummary(
+        orders_read,
+        validated_count,
+        reserved_count,
+        shipped_count,
+        rejected_count,
+        lines_written()
+    )
+    release summary_lock
+    return summary
+}

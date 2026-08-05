@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `{` after object name
+object Person
+    name: string

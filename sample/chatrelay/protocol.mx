@@ -1,0 +1,147 @@
+package protocol
+load_packages {types, roster, logger}
+
+// Line protocol (one command per line, terminated by '\n'):
+//
+//   NICK <name>          claim a nickname (required first)
+//   SAY <text>           broadcast a message to the room
+//   WHO                  list connected nicknames
+//   QUIT                 disconnect this client
+//   SHUTDOWN <token>     ask the server to stop (admin only)
+
+ADMIN_TOKEN = "relay-stop"
+
+// Written by an admin SHUTDOWN; the accept loop waits on this pipe.
+shutdown_signal = pipe("chatrelay.shutdown", out)
+
+func classify(verb: string): command {
+    if verb == "NICK" {
+        return command::Nick
+    } else if verb == "SAY" {
+        return command::Say
+    } else if verb == "WHO" {
+        return command::Who
+    } else if verb == "QUIT" {
+        return command::Quit
+    } else if verb == "SHUTDOWN" {
+        return command::Shutdown
+    }
+    return command::Unknown
+}
+
+func parse_line(line: string): tuple[command, string] {
+    trimmed = trim(line)
+    if trimmed == "" {
+        return {command::Unknown, ""}
+    }
+    parts = split(trimmed, " ")
+    verb = parts[0]
+    rest = ""
+    if parts.len > 1 {
+        rest = join_parts(parts, 1)
+    }
+    return {classify(verb), rest}
+}
+
+func join_parts(parts: [string], start: int): string {
+    out = ""
+    i = start
+    loop i != parts.len {
+        if i == start {
+            out = parts[i]
+        } else {
+            out = concat(out, " ", parts[i])
+        }
+        i += 1
+    }
+    return out
+}
+
+func valid_nick(nick: string): bool {
+    if nick.len == 0 {
+        return false
+    }
+    if nick.len > 24 {
+        return false
+    }
+    // letters, digits, underscore only
+    return has_substring_regex(nick, r"^[A-Za-z0-9_]+$")
+}
+
+// Drive one client session until QUIT, hangup, or SHUTDOWN.
+func serve_client(client: socket, peer: string): void {
+    nick = ""
+    registered = false
+
+    write(client, "WELCOME chatrelay — send NICK <name> to join\n")
+    log_line(concat("connect ", peer))
+
+    loop {
+        raw = read(client, 1024)
+        if raw == null {
+            break
+        }
+
+        cmd, arg = parse_line(cast[string](raw))
+
+        match cmd {
+            case command::Nick {
+                if registered {
+                    write(client, "ERR already registered\n")
+                } else if !valid_nick(arg) {
+                    write(client, "ERR invalid nick\n")
+                } else if !add_client(arg, client, peer) {
+                    write(client, "ERR nick taken\n")
+                } else {
+                    nick = arg
+                    registered = true
+                    write(client, concat("OK hello ", nick, "\n"))
+                    broadcast(concat("* ", nick, " joined\n"), nick)
+                    log_line(concat("nick ", peer, " -> ", nick))
+                }
+            }
+            case command::Say {
+                if !registered {
+                    write(client, "ERR nick required\n")
+                } else if arg == "" {
+                    write(client, "ERR empty message\n")
+                } else {
+                    line = concat(nick, ": ", arg, "\n")
+                    broadcast(line, "")
+                    log_line(concat("say ", line))
+                }
+            }
+            case command::Who {
+                names = list_nicks()
+                write(client, concat("OK ", names, "\n"))
+            }
+            case command::Quit {
+                write(client, "OK bye\n")
+                break
+            }
+            case command::Shutdown {
+                if arg != ADMIN_TOKEN {
+                    write(client, "ERR forbidden\n")
+                } else {
+                    write(client, "OK shutting down\n")
+                    log_line("shutdown requested")
+                    1 -> shutdown_signal
+                    break
+                }
+            }
+            case command::Unknown {
+                write(client, "ERR unknown command\n")
+            }
+        }
+    }
+
+    if registered {
+        remove_client(nick)
+        broadcast(concat("* ", nick, " left\n"), nick)
+        log_line(concat("disconnect ", nick))
+    } else {
+        log_line(concat("disconnect ", peer))
+    }
+
+    close(client)
+}

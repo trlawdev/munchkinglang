@@ -1,0 +1,32 @@
+package postfix_chains
+
+// member access
+field = obj.field
+deep = obj.outer.inner.leaf
+
+// indexing
+first = items[0]
+computed_index = items[i + 1]
+nested_index = matrix[1][2]
+triple_index = cube[0][1][2]
+
+// calls
+no_args = ready()
+one_arg = double(2)
+many_args = compute(1, 2.0, "three", 'f', true, null)
+nested_call = outer(inner(1), 2)
+call_with_expr_args = f(a + b, !c, -d, items[0], obj.field)
+
+// enum access
+member = Gender::Male
+
+// arbitrary mixing of the postfix forms
+mixed = obj.method(1)[0].field
+mixed2 = registry[0].build().items[2].name
+call_result_indexed = make_array()[3]
+call_result_called = make_callback()(1, 2)
+
+// postfix on literals and grouped expressions
+literal_member = "text".len
+grouped_member = (a + b).len
+array_indexed = [1, 2, 3][0]

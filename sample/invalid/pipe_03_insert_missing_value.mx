@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// there is no value to insert
+-> out_pipe

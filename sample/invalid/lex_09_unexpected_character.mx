@@ -1,0 +1,5 @@
+package bad
+
+// expected error: unexpected character
+// `@` is not part of the language
+x = @value

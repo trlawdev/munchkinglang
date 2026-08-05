@@ -1,0 +1,8 @@
+package bad
+
+// expected error: `load_package` is only allowed at the top of the file, before any other statement
+match paint {
+    case Color::Red {
+        load_package io
+    }
+}

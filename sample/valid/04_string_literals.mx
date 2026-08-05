@@ -1,0 +1,19 @@
+package string_literals
+
+empty = ""
+simple = "hello"
+with_spaces = "hello there, world"
+
+// every supported escape sequence
+newline = "line\nbreak"
+tab = "col\tcol"
+bell = "ring\a"
+backslash = "path\\to\\file"
+double_quote = "she said \"hi\""
+single_quote = "it\'s fine"
+
+// escapes mixed with plain runs of text
+mixed = "start\tmiddle\nend\\done\"quoted\'"
+
+// characters that are punctuation elsewhere in the grammar
+punctuation = "{}[]().,:;+-*/%<>=!&|^~ // not a comment /* nor this */"

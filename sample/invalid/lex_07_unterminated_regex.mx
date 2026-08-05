@@ -1,0 +1,4 @@
+package bad
+
+// expected error: unterminated regex literal
+pattern = r"[a-z]+

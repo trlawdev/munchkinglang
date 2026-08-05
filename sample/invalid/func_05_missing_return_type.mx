@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected identifier
+// the colon is present but no type follows it
+func f(): {
+    return 1
+}

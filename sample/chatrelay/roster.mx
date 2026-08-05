@@ -1,0 +1,83 @@
+package roster
+load_package types
+
+// In-memory roster of connected clients.
+// Parallel arrays stand in for a map until the VM provides one.
+
+lock roster_lock
+
+nicks = [string][]
+handles = [socket][]
+addrs = [string][]
+
+func roster_len(): int {
+    return nicks.len
+}
+
+func find_nick(nick: string): int {
+    i = 0
+    loop i != nicks.len {
+        if nicks[i] == nick {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+func add_client(nick: string, handle: socket, addr: string): bool {
+    acquire roster_lock
+    if find_nick(nick) != -1 {
+        release roster_lock
+        return false
+    }
+    append(nicks, nick)
+    append(handles, handle)
+    append(addrs, addr)
+    release roster_lock
+    return true
+}
+
+func remove_client(nick: string): void {
+    acquire roster_lock
+    idx = find_nick(nick)
+    if idx != -1 {
+        remove_at(nicks, idx)
+        remove_at(handles, idx)
+        remove_at(addrs, idx)
+    }
+    release roster_lock
+}
+
+func list_nicks(): string {
+    acquire roster_lock
+    out = ""
+    i = 0
+    loop i != nicks.len {
+        if i == 0 {
+            out = nicks[i]
+        } else {
+            out = concat(out, ", ", nicks[i])
+        }
+        i += 1
+    }
+    release roster_lock
+    return out
+}
+
+// Deliver `line` to every connected client except the sender.
+func broadcast(line: string, except_nick: string): void {
+    acquire roster_lock
+    i = 0
+    loop i != handles.len {
+        if nicks[i] != except_nick {
+            monitor {
+                write(handles[i], line)
+            } trap(err: exception) {
+                // peer already gone; remove on next cleanup
+            }
+        }
+        i += 1
+    }
+    release roster_lock
+}

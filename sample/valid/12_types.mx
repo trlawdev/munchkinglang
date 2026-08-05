@@ -1,0 +1,79 @@
+package types
+
+// every primitive type, in parameter and return position
+func p_int(a: int): int {
+    return a
+}
+
+func p_float(a: float): float {
+    return a
+}
+
+func p_bool(a: bool): bool {
+    return a
+}
+
+func p_string(a: string): string {
+    return a
+}
+
+func p_character(a: character): character {
+    return a
+}
+
+func p_socket(a: socket): socket {
+    return a
+}
+
+// I/O object types returned by open (see sample/io.mx)
+func p_file(a: file): file {
+    return a
+}
+
+func p_term(a: term): term {
+    return a
+}
+
+func p_exception(a: exception): exception {
+    return a
+}
+
+func p_void(a: int): void {
+    return
+}
+
+// named (user-defined) types
+func named(p: Person): Gender {
+    return p.gender
+}
+
+// array types, including nesting
+func arrays(a: [int], b: [string], c: [[float]], d: [Person]): [int] {
+    return a
+}
+
+// tuple types, including empty and nested
+func tuples(a: tuple[int, int], b: tuple[string], c: tuple[]): tuple[int, float] {
+    return {1, 2.0}
+}
+
+func nested_tuples(a: tuple[tuple[int, int], [bool]]): tuple[[int], tuple[float]] {
+    return {[int][1], {1.0}}
+}
+
+// mixed array-of-tuple and tuple-of-array
+func mixed(a: [tuple[int, string]]): tuple[[int], [string]] {
+    return {[int][1], [string]["a"]}
+}
+
+// types in object field position
+object Shape {
+    id: int,
+    label: string,
+    corners: [tuple[float, float]],
+    meta: tuple[string, [int]],
+    handle: socket,
+    path_handle: file,
+    console: term,
+    last_error: exception
+}

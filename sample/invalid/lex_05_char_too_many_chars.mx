@@ -1,0 +1,4 @@
+package bad
+
+// expected error: character literal must contain exactly one character
+c = 'ab'

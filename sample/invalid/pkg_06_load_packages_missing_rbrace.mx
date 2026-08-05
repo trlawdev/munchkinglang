@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `}` after package list
+// the entries must be comma separated and the list closed
+load_packages {lib1 lib2

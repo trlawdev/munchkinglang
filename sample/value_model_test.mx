@@ -1,0 +1,32 @@
+package value_model_test
+
+object Box {
+    n: int
+}
+
+func make_box(v: int): Box {
+    return Box(v)
+}
+
+func rvo_box(v: int): Box {
+    return Box(v)
+}
+
+func identity_box(b: Box): Box {
+    return b
+}
+
+b1 = make_box(1)
+b2 = make_box(2)
+same = identity_box(b1)
+
+i = 0
+loop i < 3 {
+    println(cast[string](i))
+    i += 1
+}
+
+buff = alloc [4] [1]
+copy = buff
+delete buff
+println("done")

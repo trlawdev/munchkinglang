@@ -1,0 +1,59 @@
+package pipeline
+load_packages {types, channels, parser, stats}
+
+// Producer: stream the source file without retaining it in memory.
+func read_source(path: string): void {
+    monitor {
+        source = open(io_type::file, path, in)
+        loop {
+            line = readln(source)
+            if line == null {
+                break
+            }
+            line -> line_queue
+        }
+        close(source)
+        finish_reading()
+    } trap(err: exception) {
+        finish_reading()
+        fail(concat("cannot read ", path, ": ", cast[string](err)))
+    }
+}
+
+// Parser workers perform conversion and validation concurrently.
+func parse_worker(): void {
+    reader = pipe("logscope.lines", in)
+    loop {
+        line = <- reader
+        if line == null {
+            break
+        }
+        parse_record(line) -> record_queue
+    }
+    finish_parsing()
+}
+
+// One consumer owns aggregation order and waits for all parser sentinels.
+func aggregate_worker(): void {
+    reader = pipe("logscope.records", in)
+    completed = 0
+    loop completed != PARSER_WORKERS {
+        entry = <- reader
+        if entry == null {
+            completed += 1
+        } else {
+            record_entry(entry)
+        }
+    }
+}
+
+func analyze(path: string): Summary {
+    producer = thread(read_source, {path})
+    parser_a = thread(parse_worker, {})
+    parser_b = thread(parse_worker, {})
+    parser_c = thread(parse_worker, {})
+    aggregator = thread(aggregate_worker, {})
+
+    join [producer, parser_a, parser_b, parser_c, aggregator]
+    return snapshot()
+}

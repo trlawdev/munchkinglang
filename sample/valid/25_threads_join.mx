@@ -1,0 +1,37 @@
+package threads_join
+
+// a thread is spawned by an ordinary call taking a lambda and a
+// tuple of captured arguments
+t1 = thread(lambda (n: int): void => {
+    print(n)
+}, {1})
+
+t2 = thread(lambda (client: socket, addr: string): void => {
+    loop {
+        data = read(client, 1024)
+        if data == null {
+            break
+        }
+        write(client, data)
+    }
+}, {client_socket, addr})
+
+// a named function may be used instead of a lambda
+t3 = thread(worker, {2})
+
+// join takes a bracketed list of names
+join [t1]
+join [t1, t2, t3]
+
+// the list may be empty
+join []
+
+// threads created in a loop and joined afterwards
+loop accepting {
+    client_socket, addr = accept(server)
+    handler = thread(lambda (c: socket): void => {
+        close(c)
+    }, {client_socket})
+}
+
+join [handler]

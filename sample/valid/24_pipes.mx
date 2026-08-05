@@ -1,0 +1,49 @@
+package pipes
+
+// pipe creation is an ordinary call
+out_pipe = pipe("pipe_id", out)
+in_pipe = pipe("other_id", in)
+
+// insertion: value -> pipe_name
+42 -> out_pipe
+"message" -> out_pipe
+result -> out_pipe
+
+// the inserted value may be any expression
+a + b * 2 -> out_pipe
+compute(1, 2) -> out_pipe
+obj.field -> out_pipe
+items[0] -> out_pipe
+[int][1, 2] -> out_pipe
+cast[int]("5") -> out_pipe
+-count -> out_pipe
+!flag -> out_pipe
+
+// a tuple literal cannot start a statement, because `{` there opens a
+// block; bind it to a name first
+coordinates = {1, 2}
+coordinates -> out_pipe
+
+// extraction blocks until a value is available
+value = <- in_pipe
+
+// an extraction is a unary expression, so it composes
+doubled = <- in_pipe
+sum = 1 + 2
+first, second = <- in_pipe
+print("received: ", value)
+
+// extraction as a condition
+if <- ready_pipe {
+    print("ready")
+}
+
+loop <- more_pipe {
+    print("again")
+}
+
+// extraction as a call argument
+consume(<- in_pipe)
+
+// a round trip: read, transform, write back
+<- in_pipe -> out_pipe

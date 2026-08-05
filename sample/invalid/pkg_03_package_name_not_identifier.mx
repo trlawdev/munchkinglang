@@ -1,0 +1,3 @@
+// expected error: expected identifier
+// a package name must be an identifier, not a literal
+package 42

@@ -1,0 +1,8 @@
+package bad
+
+// expected error: `load_package` is only allowed at the top of the file, before any other statement
+if needs_io {
+    print("yes")
+} else {
+    load_package string
+}

@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `}`
+loop i != 10 {
+    i += 1

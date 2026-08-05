@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// the capacity is required
+buff = alloc [] [1, 2, 3]

@@ -1,0 +1,8 @@
+package bad
+
+// expected error: expected identifier
+// the trap parameter must be annotated with a type
+monitor {
+    risky()
+} trap(e: ) {
+}

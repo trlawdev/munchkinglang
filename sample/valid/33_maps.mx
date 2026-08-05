@@ -1,0 +1,22 @@
+package maps_demo
+
+func make_handler(factor: int): Lambda[{string} => int] {
+    return lambda (s: string): int => { return cast[int](s) * factor }
+}
+
+hmap = map[string => Lambda[{string} => int]]{
+    "Male" : lambda (s: string): int => { return cast[int](s) * 10 },
+    "Female" : lambda (s: string): int => { return cast[int](s) * 20 }
+}
+
+male = get(hmap, "Male")
+print(male("5"))
+
+hmap insert(hmap, {"Test" : lambda (s: string): int => { return s.len * 1000 } })
+test = get(hmap, "Test")
+print(test("3"))
+
+port = env("PATH")
+if port != null {
+    print("PATH is set")
+}

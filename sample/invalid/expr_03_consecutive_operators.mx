@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// `*` is not a unary operator, so it cannot follow `+`
+x = 1 + * 2

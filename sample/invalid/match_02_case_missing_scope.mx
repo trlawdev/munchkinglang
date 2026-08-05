@@ -1,0 +1,9 @@
+package bad
+
+// expected error: expected `::` in match case
+// a case must name both the enum and the member
+match paint {
+    case Red {
+        print("red")
+    }
+}

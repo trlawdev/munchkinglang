@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `:` after parameter name
+// every parameter must be annotated with a type
+func f(a): int {
+    return a
+}

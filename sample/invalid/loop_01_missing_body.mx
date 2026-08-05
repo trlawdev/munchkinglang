@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `{`
+// a loop body must be a block
+loop i != 10
+    i += 1

@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `}` after object fields
+object Person {
+    name: string,
+    age: int

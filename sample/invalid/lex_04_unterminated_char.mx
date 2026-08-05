@@ -1,0 +1,5 @@
+package bad
+
+// expected error: unterminated character literal
+// the file ends immediately after the opening quote
+c = '

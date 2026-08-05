@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected `]` after alloc initializers
+buff = alloc [100] [1, 2, 3

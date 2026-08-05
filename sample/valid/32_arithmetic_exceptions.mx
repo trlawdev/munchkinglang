@@ -1,0 +1,30 @@
+package arithmetic_exceptions
+
+func safe_divide(a: int, b: int): int {
+    monitor {
+        return a / b
+    } trap(err: exception) {
+        if err.kind == "division_by_zero" {
+            print("caught division_by_zero")
+            return 0
+        }
+        fail(err.message)
+    }
+}
+
+func safe_add(a: int, b: int): int {
+    monitor {
+        return a + b
+    } trap(err: exception) {
+        if err.kind == "overflow" {
+            print("caught overflow")
+            return -1
+        }
+        fail(err.message)
+    }
+}
+
+print(safe_divide(10, 2))
+print(safe_divide(1, 0))
+print(safe_add(9223372036854775807, 1))
+// Expected (println not required): 5, caught division_by_zero, 0, caught overflow, -1

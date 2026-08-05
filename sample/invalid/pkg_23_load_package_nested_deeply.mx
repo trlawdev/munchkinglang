@@ -1,0 +1,13 @@
+package bad
+
+// expected error: `load_package` is only allowed at the top of the file, before any other statement
+// no depth of nesting reopens the import header
+func outer(): void {
+    loop working {
+        if ready {
+            {
+                load_package io
+            }
+        }
+    }
+}

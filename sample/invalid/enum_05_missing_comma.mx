@@ -1,0 +1,8 @@
+package bad
+
+// expected error: expected `}` after enum members
+// members must be separated by commas
+enum Gender {
+    Male
+    Female
+}

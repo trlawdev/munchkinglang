@@ -1,0 +1,5 @@
+package bad
+
+// expected error: character literal must contain exactly one character
+// the closing quote is missing, so the newline is seen instead
+c = 'a

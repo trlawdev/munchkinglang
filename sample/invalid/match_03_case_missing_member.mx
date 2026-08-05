@@ -1,0 +1,9 @@
+package bad
+
+// expected error: expected identifier
+// the member name after `::` is missing
+match paint {
+    case Color:: {
+        print("red")
+    }
+}

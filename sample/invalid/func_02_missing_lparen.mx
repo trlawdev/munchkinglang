@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `(` after function name
+func f: int {
+    return 1
+}

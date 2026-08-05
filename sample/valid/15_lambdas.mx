@@ -1,0 +1,68 @@
+package lambdas
+
+// no parameters
+noop = lambda (): void => {
+}
+
+// one parameter
+increment = lambda (x: int): int => {
+    return x + 1
+}
+
+// many parameters
+combine = lambda (a: int, b: string, c: bool): string => {
+    return b
+}
+
+// compound parameter and return types
+transform = lambda (values: [int], bounds: tuple[int, int]): tuple[[int], bool] => {
+    return {values, true}
+}
+
+// a lambda body may contain any statement, including control flow
+classify = lambda (n: int): string => {
+    if n < 0 {
+        return "negative"
+    } else if n == 0 {
+        return "zero"
+    }
+    loop n > 100 {
+        n += -1
+    }
+    return "positive"
+}
+
+// immediately invoked
+result = lambda (x: int): int => {
+    return x * 2
+}(21)
+
+// invoked with no arguments
+side_effect = lambda (): void => {
+    print("called")
+}()
+
+// passed as a call argument
+apply(lambda (n: int): bool => {
+    return n % 2 == 0
+}, 10)
+
+// several lambda arguments in one call
+zip_with(lambda (a: int): int => {
+    return a
+}, lambda (b: int): int => {
+    return b
+})
+
+// a lambda nested inside another lambda's body
+nested = lambda (x: int): int => {
+    inner = lambda (y: int): int => {
+        return y * y
+    }
+    return inner(x)
+}
+
+// a lambda as an expression statement
+lambda (): void => {
+    print("standalone")
+}

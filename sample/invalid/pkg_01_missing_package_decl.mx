@@ -1,0 +1,3 @@
+// expected error: expected `package`
+// every file must open with a package declaration
+x = 1

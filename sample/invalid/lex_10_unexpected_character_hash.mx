@@ -1,0 +1,6 @@
+package bad
+
+// expected error: unexpected character
+// `#` does not start a comment in munx; use `//` or `/* */`
+# this is not a comment
+x = 1

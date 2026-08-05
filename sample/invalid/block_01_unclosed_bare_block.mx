@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `}`
+// a bare block statement is never closed
+{
+    x = 1

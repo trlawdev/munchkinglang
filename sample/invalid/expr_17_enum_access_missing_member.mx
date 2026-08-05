@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// a member name must follow `::`
+x = Gender::42

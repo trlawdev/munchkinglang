@@ -1,0 +1,8 @@
+package bad
+
+// expected error: expected `{`
+// a case body must be a block
+match paint {
+    case Color::Red
+        print("red")
+}

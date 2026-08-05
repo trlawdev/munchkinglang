@@ -1,0 +1,62 @@
+package chatrelay
+load_packages {types, logger, server}
+
+// Concurrent TCP chat relay.
+//
+// Real-world shape:
+//   - binds a TCP socket on 0.0.0.0:7070
+//   - accepts many clients, one thread each
+//   - line protocol: NICK / SAY / WHO / QUIT / SHUTDOWN
+//   - shared roster guarded by a lock
+//   - transcript written asynchronously through a pipe to a log file
+//
+// Build / parse the whole project:
+//   ./munx --files sample/chatrelay/*.mx
+//
+// At runtime (once a VM exists), start with:
+//   munx-run sample/chatrelay/main.mx -- --log /var/log/chatrelay.log
+//
+// Example session (from another shell):
+//   NICK alice
+//   SAY hello room
+//   WHO
+//   QUIT
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+if argv.len == 0 {
+    fail("usage: chatrelay [--log PATH]")
+}
+
+log_path = "chatrelay.log"
+i = 0
+loop i != argv.len {
+    if argv[i] == "--log" {
+        if i + 1 >= argv.len {
+            fail("--log requires a path")
+        }
+        log_path = argv[i + 1]
+        i += 1
+    } else if argv[i] == "--help" {
+        println("chatrelay — concurrent TCP chat relay on port 7070")
+        println("options:")
+        println("  --log PATH   transcript file (default chatrelay.log)")
+        return
+    }
+    i += 1
+}
+
+start_logger(log_path)
+println(concat("chatrelay starting; logging to ", log_path))
+
+monitor {
+    serve_forever()
+} trap(err: exception) {
+    println(concat("fatal: ", cast[string](err)))
+    stop_logger()
+    fail("chatrelay exited with error")
+}
+
+stop_logger()
+println("chatrelay stopped")

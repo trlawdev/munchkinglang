@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected expression
+// `|` is produced by the lexer but the parser has no binary rule
+// for it, so bitwise or is unusable
+x = a | b

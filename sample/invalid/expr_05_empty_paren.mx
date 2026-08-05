@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// a parenthesized group must contain an expression
+x = ()

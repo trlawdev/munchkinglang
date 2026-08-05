@@ -1,0 +1,18 @@
+package channels
+
+// Bounded work queues decouple disk I/O, parsing, and aggregation.
+line_queue = pipe("logscope.lines", out)
+record_queue = pipe("logscope.records", out)
+
+PARSER_WORKERS = 3
+
+func finish_reading(): void {
+    // One sentinel per parser worker guarantees that every worker exits.
+    null -> line_queue
+    null -> line_queue
+    null -> line_queue
+}
+
+func finish_parsing(): void {
+    null -> record_queue
+}

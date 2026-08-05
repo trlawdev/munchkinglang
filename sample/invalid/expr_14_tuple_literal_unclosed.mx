@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected `}` after tuple literal
+x = {1, 2

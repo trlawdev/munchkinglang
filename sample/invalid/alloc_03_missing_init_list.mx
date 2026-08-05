@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `[` for alloc initializers
+// the initializer list is required, though it may be empty
+buff = alloc [100]
+delete buff

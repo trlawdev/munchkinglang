@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected identifier
+object Person {
+    : string
+}

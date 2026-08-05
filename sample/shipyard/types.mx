@@ -1,0 +1,61 @@
+package types
+
+// Shared domain types for the shipyard order-fulfillment demo.
+// The emphasis of this project is verbose, structured logging at every stage.
+
+enum io_type {
+    file,
+    tty
+}
+
+enum log_level {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error
+}
+
+enum order_priority {
+    Standard,
+    Express,
+    Overnight
+}
+
+enum fulfillment_status {
+    Pending,
+    Validated,
+    Reserved,
+    Routed,
+    Packed,
+    Shipped,
+    Rejected
+}
+
+object OrderLine {
+    order_id: string,
+    sku: string,
+    qty: int,
+    customer: string,
+    priority: order_priority
+}
+
+object FulfillmentRecord {
+    order_id: string,
+    sku: string,
+    qty: int,
+    customer: string,
+    priority: order_priority,
+    status: fulfillment_status,
+    warehouse: string,
+    rejection_reason: string
+}
+
+object RunSummary {
+    orders_read: int,
+    validated: int,
+    reserved: int,
+    shipped: int,
+    rejected: int,
+    log_lines: int
+}

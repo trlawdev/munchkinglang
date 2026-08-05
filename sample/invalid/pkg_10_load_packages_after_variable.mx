@@ -1,0 +1,6 @@
+package bad
+
+// expected error: `load_packages` is only allowed at the top of the file, before any other statement
+// the braced form is restricted to the header just like the single form
+x = 1
+load_packages {io, string}

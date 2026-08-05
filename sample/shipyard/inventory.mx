@@ -1,0 +1,99 @@
+package inventory
+load_packages {types, logging}
+
+// In-memory stock ledger. Each SKU owns a global counter so concurrent workers
+// never rebuild a shared array under lock (which was fragile in the sample VM).
+
+lock stock_lock
+
+stock_WIDGET_A = 120
+stock_WIDGET_B = 85
+stock_GADGET_X = 40
+stock_GADGET_Y = 12
+stock_PART_Z = 3
+
+func lookup_stock(sku: string): int {
+    if sku == "WIDGET-A" {
+        return stock_WIDGET_A
+    }
+    if sku == "WIDGET-B" {
+        return stock_WIDGET_B
+    }
+    if sku == "GADGET-X" {
+        return stock_GADGET_X
+    }
+    if sku == "GADGET-Y" {
+        return stock_GADGET_Y
+    }
+    if sku == "PART-Z" {
+        return stock_PART_Z
+    }
+    return -1
+}
+
+func write_stock(sku: string, qty: int): void {
+    if sku == "WIDGET-A" {
+        stock_WIDGET_A = qty
+    } else if sku == "WIDGET-B" {
+        stock_WIDGET_B = qty
+    } else if sku == "GADGET-X" {
+        stock_GADGET_X = qty
+    } else if sku == "GADGET-Y" {
+        stock_GADGET_Y = qty
+    } else if sku == "PART-Z" {
+        stock_PART_Z = qty
+    }
+}
+
+func stock_available(sku: string): int {
+    acquire stock_lock
+    qty = lookup_stock(sku)
+    release stock_lock
+    if qty == -1 {
+        log_warn("inventory", sku, "availability query for unknown sku")
+        return 0
+    }
+    log_debug("inventory", sku, concat("on-hand ", cast[string](qty)))
+    return qty
+}
+
+func stock_reserve(sku: string, qty: int, correlation: string): bool {
+    acquire stock_lock
+    before = lookup_stock(sku)
+    if before == -1 {
+        release stock_lock
+        log_error("inventory", correlation, concat("reserve failed: unknown sku ", sku))
+        return false
+    }
+    if before < qty {
+        release stock_lock
+        log_warn("inventory", correlation, concat(
+            "reserve failed: need ", cast[string](qty),
+            " of ", sku, " but only ", cast[string](before), " remain"
+        ))
+        return false
+    }
+    after = before - qty
+    write_stock(sku, after)
+    release stock_lock
+    log_info("inventory", correlation, concat(
+        "reserved ", cast[string](qty), " ", sku,
+        " (", cast[string](before), " -> ", cast[string](after), ")"
+    ))
+    return true
+}
+
+func snapshot_levels(): string {
+    acquire stock_lock
+    text = concat(
+        "inventory snapshot:",
+        " WIDGET-A=", cast[string](stock_WIDGET_A),
+        " WIDGET-B=", cast[string](stock_WIDGET_B),
+        " GADGET-X=", cast[string](stock_GADGET_X),
+        " GADGET-Y=", cast[string](stock_GADGET_Y),
+        " PART-Z=", cast[string](stock_PART_Z)
+    )
+    release stock_lock
+    log_info("inventory", "snapshot", text)
+    return text
+}

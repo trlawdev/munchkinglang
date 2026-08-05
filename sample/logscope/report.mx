@@ -1,0 +1,45 @@
+package report
+load_package types
+
+func percentage(part: int, whole: int): float {
+    if whole == 0 {
+        return 0.0
+    }
+    return cast[float](part) * 100.0 / cast[float](whole)
+}
+
+func average_duration(summary: Summary): float {
+    valid = summary.total - summary.malformed
+    if valid == 0 {
+        return 0.0
+    }
+    return summary.duration_ms / cast[float](valid)
+}
+
+func render_report(summary: Summary): string {
+    return concat(
+        "logscope report\n",
+        "===============\n",
+        "requests:      ", cast[string](summary.total), "\n",
+        "successful:    ", cast[string](summary.successful), " (",
+        cast[string](percentage(summary.successful, summary.total)), "%)\n",
+        "redirected:    ", cast[string](summary.redirected), "\n",
+        "client errors: ", cast[string](summary.client_errors), "\n",
+        "server errors: ", cast[string](summary.server_errors), "\n",
+        "malformed:     ", cast[string](summary.malformed), "\n",
+        "bytes served:  ", cast[string](summary.bytes), "\n",
+        "average ms:    ", cast[string](average_duration(summary)), "\n"
+    )
+}
+
+func write_report(summary: Summary, output_path: string): void {
+    report_text = render_report(summary)
+    if output_path == "" {
+        terminal = open(io_type::tty, out)
+        write(terminal, report_text)
+    } else {
+        destination = open(io_type::file, output_path, out)
+        write(destination, report_text)
+        close(destination)
+    }
+}

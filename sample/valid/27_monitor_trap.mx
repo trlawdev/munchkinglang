@@ -1,0 +1,65 @@
+package monitor_trap
+
+// a monitor guards a block and traps an exception
+monitor {
+    file_object = open(io_type::file, "/some/path.txt", out)
+    num_written = write(file_object, "Hello there")
+    close(file_object)
+} trap(error_object: exception) {
+    print("write failed")
+}
+
+// both blocks may be empty
+monitor {
+} trap(e: exception) {
+}
+
+// the trap parameter may use any type
+monitor {
+    risky()
+} trap(code: int) {
+    print(code)
+}
+
+monitor {
+    risky()
+} trap(info: tuple[int, string]) {
+    print(info)
+}
+
+monitor {
+    risky()
+} trap(err: MyError) {
+    print(err)
+}
+
+// monitors nest, and their blocks accept any statement
+monitor {
+    monitor {
+        inner_risky()
+    } trap(inner: exception) {
+        print("inner")
+    }
+    loop retrying {
+        if attempt() {
+            break
+        }
+    }
+    func helper(): void {
+    }
+} trap(outer: exception) {
+    if recoverable(outer) {
+        print("recovering")
+    } else {
+        fail("unrecoverable")
+    }
+}
+
+// a monitor inside a function body
+func guarded(): void {
+    monitor {
+        risky()
+    } trap(e: exception) {
+        return
+    }
+}

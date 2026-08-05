@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `[` after `alloc`
+// alloc is written alloc [capacity] [values]
+buff = alloc 100 [1, 2, 3]

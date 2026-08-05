@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `[` after `join`
+// join takes a bracketed list of thread names
+join t1, t2

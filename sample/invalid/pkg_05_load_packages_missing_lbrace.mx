@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `{` after `load_packages`
+// the plural form requires a braced list
+load_packages lib1, lib2

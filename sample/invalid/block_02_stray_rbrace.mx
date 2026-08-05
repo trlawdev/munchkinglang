@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected expression
+// there is no open block for this brace to close
+x = 1
+}

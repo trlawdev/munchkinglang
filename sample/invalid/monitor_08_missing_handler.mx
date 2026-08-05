@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `{`
+// the trap clause needs a handler block
+monitor {
+    risky()
+} trap(e: exception)

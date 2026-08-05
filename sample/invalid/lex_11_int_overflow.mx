@@ -1,0 +1,5 @@
+package bad
+
+// expected error: integer literal out of range
+// this value does not fit in a signed 64-bit integer
+huge = 99999999999999999999

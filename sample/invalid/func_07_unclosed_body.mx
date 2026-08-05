@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `}`
+func f(): int {
+    return 1

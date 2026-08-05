@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `trap`
+// a monitor without a trap clause is not allowed
+monitor {
+    risky()
+}

@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// the operand is missing
+i = cast[int]()

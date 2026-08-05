@@ -1,0 +1,26 @@
+package collection_literals
+
+// array literals
+empty_array = []
+ints = [1, 2, 3]
+one_element = [1]
+heterogeneous = ['a', 2, "three", 4.0, true, null]
+nested = [[1, 2], [3, 4]]
+computed = [1 + 1, double(2), items[0]]
+
+// typed array literals: [type][values]
+empty_typed = [int][]
+typed_ints = [int][1, 2, 3]
+typed_floats = [float][1.5, 2.5]
+typed_strings = [string]["a", "b"]
+typed_chars = [character]['a', 'b']
+typed_bools = [bool][true, false]
+typed_named = [Person][alice, bob]
+
+// tuple literals
+empty_tuple = {}
+pair = {1, "one"}
+triple = {1, 2.0, 'c'}
+one_tuple = {42}
+nested_tuple = {{1, 2}, {3, 4}}
+mixed_nesting = {[1, 2], {3, 4}}

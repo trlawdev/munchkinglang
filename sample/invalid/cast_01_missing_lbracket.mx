@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected `[` after `cast`
+// a cast is written cast[type](expr)
+i = cast(int)("42")

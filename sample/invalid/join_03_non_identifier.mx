@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// join accepts thread names only, not literals
+join [42]

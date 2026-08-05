@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected `]` after join list
+join [t1, t2

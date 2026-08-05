@@ -1,0 +1,4 @@
+// expected error: expected `package`
+// the package declaration must precede any import
+load_package io
+package bad

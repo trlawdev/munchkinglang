@@ -1,0 +1,50 @@
+package server
+load_packages {types, protocol, logger}
+
+// TCP accept loop. Each client is handled on its own thread so one slow
+// peer cannot stall the room. A second thread blocks on `shutdown_signal`
+// and flips `accepting` when an admin requests stop.
+
+HOST = "0.0.0.0"
+PORT = 7070
+BACKLOG = 128
+
+accepting = true
+
+func bind_listener(): socket {
+    listener = open(io_type::socket, af_type::inet, sock_type::stream)
+    bind(listener, HOST, PORT)
+    listen(listener, BACKLOG)
+    return listener
+}
+
+func await_shutdown(): void {
+    thread(lambda (): void => {
+        reader = pipe("chatrelay.shutdown", in)
+        _ = <- reader
+        accepting = false
+        log_line("accept loop stopping")
+    }, {})
+}
+
+func serve_forever(): void {
+    listener = bind_listener()
+    log_line(concat("listening on ", HOST, ":", cast[string](PORT)))
+    await_shutdown()
+
+    loop accepting {
+        monitor {
+            client, peer = accept(listener)
+            thread(lambda (sock: socket, addr: string): void => {
+                serve_client(sock, addr)
+            }, {client, peer})
+        } trap(err: exception) {
+            if accepting {
+                log_line(concat("accept error: ", cast[string](err)))
+            }
+        }
+    }
+
+    close(listener)
+    log_line("listener closed")
+}

@@ -1,0 +1,8 @@
+package bad
+
+// expected error: expected `trap`
+// the handler clause is introduced by `trap`, not `catch`
+monitor {
+    risky()
+} catch(e: exception) {
+}

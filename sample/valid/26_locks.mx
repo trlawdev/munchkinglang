@@ -1,0 +1,42 @@
+package locks
+
+// declaring a lock
+lock counter_lock
+lock queue_lock
+
+// a lock declaration may be followed by an optional semicolon
+lock other_lock;
+
+// acquiring and releasing
+acquire counter_lock
+counter += 1
+release counter_lock
+
+// nested critical sections over distinct locks
+acquire queue_lock
+acquire counter_lock
+counter += 1
+release counter_lock
+release queue_lock
+
+// inside functions, loops and threads
+func increment(): void {
+    acquire counter_lock
+    counter += 1
+    release counter_lock
+}
+
+loop working {
+    acquire queue_lock
+    item = pop(queue)
+    release queue_lock
+    if item == null {
+        break
+    }
+}
+
+worker = thread(lambda (): void => {
+    acquire counter_lock
+    counter += 1
+    release counter_lock
+}, {})

@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `]` after tuple type
+func divide(a: int, b: int): tuple[int, int {
+    return {a / b, a % b}
+}

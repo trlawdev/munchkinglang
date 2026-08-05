@@ -1,0 +1,20 @@
+package package_imports
+
+// single-package import form, repeated
+load_package io
+load_package string
+load_package math
+
+// braced multi-package form
+load_packages {net, fs, time}
+
+// both forms may be interleaved
+load_package thread_
+load_packages {process_}
+
+// single-element braced list
+load_packages {json}
+
+// the import header ends here: the first statement closes it, and no
+// later import is accepted at any scope
+x = 1

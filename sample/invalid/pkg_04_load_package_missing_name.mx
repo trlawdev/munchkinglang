@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// load_package needs a package name
+load_package 42

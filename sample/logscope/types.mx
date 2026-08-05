@@ -1,0 +1,28 @@
+package types
+
+// Shared runtime and domain types for the logscope access-log analyzer.
+
+enum io_type {
+    file,
+    tty
+}
+
+object LogRecord {
+    method: string,
+    path: string,
+    status: int,
+    bytes: int,
+    duration_ms: float,
+    malformed: bool
+}
+
+object Summary {
+    total: int,
+    successful: int,
+    redirected: int,
+    client_errors: int,
+    server_errors: int,
+    malformed: int,
+    bytes: int,
+    duration_ms: float
+}

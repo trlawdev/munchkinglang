@@ -1,0 +1,15 @@
+package char_literals
+
+letter = 'a'
+upper = 'Z'
+digit = '7'
+space = ' '
+symbol = '@'
+
+// every supported escape sequence
+newline = '\n'
+tab = '\t'
+bell = '\a'
+backslash = '\\'
+double_quote = '\"'
+single_quote = '\''

@@ -1,0 +1,5 @@
+// Compile-time warning test: expect stderr warning, not a runtime error.
+//   ./munxc sample/warnings/01_constant_overflow.mx
+package constant_overflow_warning
+
+x = 9223372036854775807 + 1

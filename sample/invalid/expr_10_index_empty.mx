@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// an index expression is required between the brackets
+x = items[]

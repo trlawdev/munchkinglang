@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `)` after parameters
+func f(a: int: int {
+    return a
+}

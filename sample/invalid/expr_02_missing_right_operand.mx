@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected expression
+// the binary operator has no right operand
+x = 1 +

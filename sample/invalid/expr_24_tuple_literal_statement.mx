@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected expression
+// a tuple literal cannot start a statement: `{` there opens a block,
+// so the elements are read as statements
+{1, 2} -> out_pipe

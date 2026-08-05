@@ -1,0 +1,20 @@
+package pipehub_subscriber
+
+// Broadcast subscriber for the pipehub demo.
+//
+//   ./munxc --run sample/pipehub/subscriber.mx
+//
+// Run two terminals with this command, then publish from publisher.mx.
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+CHANNEL = "pipehub.events"
+
+events = pipe(CHANNEL, subscribe)
+event = <- events
+if event == null {
+    fail("pipe hub closed before a message arrived")
+}
+
+println(concat("received: ", cast[string](event)))

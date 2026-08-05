@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected identifier
+// a trailing comma leaves the list expecting another parameter
+func f(a: int,): int {
+    return a
+}

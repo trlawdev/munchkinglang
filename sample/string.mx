@@ -1,0 +1,18 @@
+package string_
+
+str0 = "Hello world"
+str1 = "Test"
+
+str2 = concat(str0, str1) // concat is a keyword, str0 and str1 or more, str2 == "Hello worldTest"
+len_ = len(str0) // takes either array for string, returns the number of elements
+
+arr = split(str0, " ") // split is a keyword, works on both arrays and string, arr = ["Hello", "world"], for arrays it returns sub arrays
+isor = true // has_substring is a keyword
+if isor {
+    println("yes it has a substring")
+}
+
+isor = has_substring_regex(str0, r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$") //has_substring_regex is a keyword
+
+ 
+

@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected `{`
+if ready {
+    print("yes")
+} else
+    print("no")

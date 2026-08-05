@@ -1,0 +1,9 @@
+package bad
+
+// expected error: `load_package` is only allowed at the top of the file, before any other statement
+// a declaration also ends the header
+func f(): int {
+    return 1
+}
+
+load_package io

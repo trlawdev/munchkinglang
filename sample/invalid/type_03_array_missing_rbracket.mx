@@ -1,0 +1,6 @@
+package bad
+
+// expected error: expected `]` after array type
+func sum(values: [int): int {
+    return values[0]
+}

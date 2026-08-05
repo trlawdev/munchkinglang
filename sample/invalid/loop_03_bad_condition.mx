@@ -1,0 +1,7 @@
+package bad
+
+// expected error: expected expression
+// the condition begins with a binary operator and has no left operand
+loop == 5 {
+    break
+}

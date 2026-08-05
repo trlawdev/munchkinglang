@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected `)` after cast operand
+i = cast[int]("42"

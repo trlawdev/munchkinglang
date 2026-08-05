@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected identifier
+acquire 42

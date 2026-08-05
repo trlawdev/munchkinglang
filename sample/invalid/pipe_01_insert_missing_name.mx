@@ -1,0 +1,5 @@
+package bad
+
+// expected error: expected identifier
+// the insertion target must be a pipe name
+42 -> 99

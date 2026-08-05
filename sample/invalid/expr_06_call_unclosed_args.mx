@@ -1,0 +1,4 @@
+package bad
+
+// expected error: expected `)` after arguments
+print("hello"

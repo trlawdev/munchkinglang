@@ -70,6 +70,11 @@
 extern char **environ;
 #endif
 
+#if MUNX_PLATFORM_MACOS
+// Must stay outside `namespace munx` so the linker resolves crt's C symbol.
+extern "C" char ***_NSGetEnviron(void);
+#endif
+
 #if MUNX_PLATFORM_WINDOWS
 using ssize_t = SSIZE_T;
 #endif
@@ -267,7 +272,6 @@ inline std::string platform_executable_path()
 inline char **platform_environ()
 {
 #if MUNX_PLATFORM_MACOS
-    extern char ***_NSGetEnviron(void);
     return *_NSGetEnviron();
 #else
     return ::environ;

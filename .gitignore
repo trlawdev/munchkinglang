@@ -3,6 +3,7 @@
 /munxc_avx
 /munx
 /build/
+/bin/
 *.exe
 *.obj
 *.o

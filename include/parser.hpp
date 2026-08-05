@@ -144,8 +144,8 @@ namespace munx
         /// Throw a @ref compilation_error at @p t with message @p msg.
         [[noreturn]] void error(const token &t, const std::string &msg)
         {
-            throw compilation_error{path_.string() + ':' + std::to_string(t.line) +
-                                    ':' + std::to_string(t.column) + ": error: " + msg};
+            fail_compile(path_.string() + ':' + std::to_string(t.line) +
+                                    ':' + std::to_string(t.column) + ": error: " + msg);
         }
 
         /// Throw a @ref compilation_error at the current token.
@@ -804,7 +804,7 @@ namespace munx
         /// Build a unary expression node from @p op and @p operand.
         static std::unique_ptr<ast::expr_node>
         make_unary(ast::unary_op op, std::unique_ptr<ast::expr_node> operand,
-                   ast::source_loc loc)
+                   const ast::source_loc &loc)
         {
             return ast::make_expr_ptr(ast::unary_expr{op, std::move(operand)}, loc);
         }
@@ -1131,7 +1131,7 @@ namespace munx
         }
 
         /// Parse `join [names…]` as a call expression statement.
-        std::unique_ptr<ast::stmt_node> parse_join(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_join(const ast::source_loc &loc)
         {
             expect(token_type::LBRACKET, "expected `[` after `join`");
             ast::call_expr call;
@@ -1151,7 +1151,7 @@ namespace munx
         }
 
         /// Parse a `func` declaration (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_func(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_func(const ast::source_loc &loc)
         {
             ast::func_decl func;
             func.name = expect_name();
@@ -1165,7 +1165,7 @@ namespace munx
         }
 
         /// Parse an `enum` declaration (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_enum(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_enum(const ast::source_loc &loc)
         {
             ast::enum_decl decl;
             decl.name = expect_name();
@@ -1182,7 +1182,7 @@ namespace munx
         }
 
         /// Parse an `object` declaration (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_object(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_object(const ast::source_loc &loc)
         {
             ast::object_decl object;
             object.name = expect_name();
@@ -1204,7 +1204,7 @@ namespace munx
         }
 
         /// Parse an `if` / `else if` / `else` chain (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_if(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_if(const ast::source_loc &loc)
         {
             ast::if_stmt stmt;
             stmt.then_branch = std::make_unique<ast::if_branch>();
@@ -1230,7 +1230,7 @@ namespace munx
         }
 
         /// Parse a `loop` statement (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_loop(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_loop(const ast::source_loc &loc)
         {
             ast::loop_stmt loop;
             if (!check(token_type::LBRACE))
@@ -1242,7 +1242,7 @@ namespace munx
         }
 
         /// Parse a `match` statement (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_match(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_match(const ast::source_loc &loc)
         {
             ast::match_stmt match_s;
             match_s.scrutinee = parse_expression();
@@ -1262,7 +1262,7 @@ namespace munx
         }
 
         /// Parse a `monitor` / `trap` statement (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_monitor(ast::source_loc loc)
+        std::unique_ptr<ast::stmt_node> parse_monitor(const ast::source_loc &loc)
         {
             ast::monitor_stmt monitor;
             monitor.protected_block = parse_block();

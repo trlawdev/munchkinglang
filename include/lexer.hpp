@@ -103,8 +103,8 @@ namespace munx
         /// Throw @ref compilation_error at the current cursor position.
         [[noreturn]] void fail(const char *msg) const
         {
-            throw compilation_error{path_.string() + ':' + std::to_string(line_) +
-                                    ':' + std::to_string(col_) + ": error: " + msg};
+            fail_compile(path_.string() + ':' + std::to_string(line_) +
+                                    ':' + std::to_string(col_) + ": error: " + msg);
         }
 
         /// Build a token stamped with @ref tok_line_ / @ref tok_col_.

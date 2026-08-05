@@ -52,7 +52,7 @@ struct resolved_type
         return out;
     }
 
-    [[nodiscard]] static resolved_type named(std::string type_name)
+    [[nodiscard]] static resolved_type named(const std::string& type_name)
     {
         resolved_type out{};
         out.tag = kind::Named;
@@ -60,7 +60,7 @@ struct resolved_type
         return out;
     }
 
-    [[nodiscard]] static resolved_type array(resolved_type element)
+    [[nodiscard]] static resolved_type array(const resolved_type& element)
     {
         resolved_type out{};
         out.tag = kind::Array;
@@ -68,7 +68,7 @@ struct resolved_type
         return out;
     }
 
-    [[nodiscard]] static resolved_type tuple(std::vector<resolved_type> fields)
+    [[nodiscard]] static resolved_type tuple(const std::vector<resolved_type>& fields)
     {
         resolved_type out{};
         out.tag = kind::Tuple;
@@ -76,7 +76,7 @@ struct resolved_type
         return out;
     }
 
-    [[nodiscard]] static resolved_type enum_member(std::string enum_name)
+    [[nodiscard]] static resolved_type enum_member(const std::string& enum_name)
     {
         resolved_type out{};
         out.tag = kind::EnumMember;
@@ -91,7 +91,7 @@ struct resolved_type
         return out;
     }
 
-    [[nodiscard]] static resolved_type simd(resolved_type lane)
+    [[nodiscard]] static resolved_type simd(const resolved_type& lane)
     {
         resolved_type out{};
         out.tag = kind::Simd;
@@ -99,7 +99,7 @@ struct resolved_type
         return out;
     }
 
-    [[nodiscard]] static resolved_type map_of(resolved_type key, resolved_type value)
+    [[nodiscard]] static resolved_type map_of(const resolved_type& key, const resolved_type& value)
     {
         resolved_type out{};
         out.tag = kind::Map;
@@ -487,8 +487,8 @@ private:
 
     [[noreturn]] static void fail(const ast::source_loc &loc, const std::string &message)
     {
-        throw compilation_error{loc.file + ':' + std::to_string(loc.line) + ':' +
-                                std::to_string(loc.column) + ": error: " + message};
+        fail_compile(loc.file + ':' + std::to_string(loc.line) + ':' +
+                                std::to_string(loc.column) + ": error: " + message);
     }
 
     static void warn_at(const ast::source_loc &loc, const std::string &message)

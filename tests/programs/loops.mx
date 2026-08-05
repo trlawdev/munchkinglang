@@ -1,0 +1,10 @@
+package loops
+
+sum = 0
+index = 0
+loop index < 100 {
+    sum = sum + index
+    index = index + 1
+}
+print("sum=", sum)
+println("")

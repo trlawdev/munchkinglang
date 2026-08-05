@@ -1,0 +1,13 @@
+package branch_count
+
+// Counted loop — back-edge is highly predictable (not taken until exit).
+limit = 1000000
+sum = 0
+index = 0
+loop index < limit {
+    sum = sum + index
+    index = index + 1
+}
+
+print("sum=", sum)
+println("")

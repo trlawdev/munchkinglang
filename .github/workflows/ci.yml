@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: clang++
+            cxx: clang++
+          - os: ubuntu-latest
+            compiler: g++
+            cxx: g++
+          - os: macos-latest
+            compiler: clang++
+            cxx: clang++
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang g++
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DMUNX_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          MUNX_PIPE_HUB: "0"
+        run: ctest --test-dir build --output-on-failure --parallel 2
+
+      - name: Branch smoke (JIT)
+        env:
+          MUNX_PIPE_HUB: "0"
+        run: |
+          ./build/munxc --run sample/bench/branch_count.mx | tee /tmp/branch_count.out
+          grep -q 'sum=499999500000' /tmp/branch_count.out
+
+      - name: Cleanup generated files
+        if: always()
+        run: bash tools/ci_cleanup.sh
+
+  compile-sh:
+    name: compile.sh (clang++)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Build with compile.sh
+        run: ./compile.sh
+
+      - name: Smoke run
+        env:
+          MUNX_PIPE_HUB: "0"
+        run: |
+          ./munxc --run tests/programs/hello.mx
+          ./munxc --run tests/programs/loops.mx
+
+      - name: Cleanup generated files
+        if: always()
+        run: bash tools/ci_cleanup.sh
+
+  cleanup:
+    name: Cleanup generated log files
+    needs: [build-and-test, compile-sh]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Delete generated logs and bytecode
+        run: bash tools/ci_cleanup.sh

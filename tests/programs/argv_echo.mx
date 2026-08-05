@@ -1,0 +1,6 @@
+package argv_echo
+
+print("argc=", argv.len)
+println("")
+print("arg0=", argv[0])
+println("")

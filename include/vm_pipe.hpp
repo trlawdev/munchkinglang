@@ -446,7 +446,7 @@ struct pipe_object
     }
 
     /// Create (if needed) and open one end of a named pipe.
-    static pipe_ref open(std::string id, bool reading, bool writing,
+    static pipe_ref open(const std::string &id, bool reading, bool writing,
                          bool subscribing = false)
     {
 #if MUNX_VM_HAS_NAMED_PIPES
@@ -460,7 +460,7 @@ struct pipe_object
         }
 
         auto handle = std::make_shared<pipe_object>();
-        handle->id = std::move(id);
+        handle->id = id;
         handle->readable = reading;
         handle->writable = writing;
         handle->broadcast = subscribing;
@@ -554,7 +554,7 @@ struct pipe_object
 #endif
     }
 
-    void insert(value item)
+    void insert(value &item)
     {
 #if MUNX_VM_HAS_NAMED_PIPES
         if (!writable)

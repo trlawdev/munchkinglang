@@ -121,7 +121,7 @@ namespace munx
                 fmt += 2;
                 break;
             default:
-                throw compilation_error{"unrecognized escape character"};
+                fail_compile("unrecognized escape character");
             }
 
             return fmt;
@@ -141,15 +141,15 @@ namespace munx
                     {
                         return fmt; // caller consumes the placeholder
                     }
-                    throw compilation_error{
+                    fail_compile(
                         "expected matching `}` for format specifier in "
-                        "string literal"};
+                        "string literal");
                 }
                 case '\\':
                     fmt = handle_escape_sequences(fmt);
                     break;
                 case '}':
-                    throw compilation_error{"matching `{` not found, if you intend to type `}` escape it `\\`"};
+                    fail_compile("matching `{` not found, if you intend to type `}` escape it `\\`");
                 default:
                     output_stream_handle_ << *fmt;
                     fmt++;
@@ -165,7 +165,7 @@ namespace munx
             fmt = emit_until_placeholder(fmt);
             if (*fmt == '{' && *(fmt + 1) == '}')
             {
-                throw compilation_error{"there are more format specifiers than arguments"};
+                fail_compile("there are more format specifiers than arguments");
             }
         }
 
@@ -176,7 +176,7 @@ namespace munx
             fmt = emit_until_placeholder(fmt);
             if (!(*fmt == '{' && *(fmt + 1) == '}'))
             {
-                throw compilation_error{"there are more arguments than format specifiers"};
+                fail_compile("there are more arguments than format specifiers");
             }
             output_stream_handle_ << std::forward<First>(first);
             format_impl(fmt + 2, std::forward<Rest>(rest)...);
@@ -197,7 +197,7 @@ namespace munx
             const size_t arg_count = 1 + sizeof...(Rest);
             if (count_open_close_braces(fmt) != arg_count)
             {
-                throw compilation_error{"format specifier count does not match argument count"};
+                fail_compile("format specifier count does not match argument count");
             }
             format_impl(fmt, std::forward<First>(first), std::forward<Rest>(rest)...);
             return output_stream_handle_;

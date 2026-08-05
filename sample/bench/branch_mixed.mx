@@ -1,0 +1,21 @@
+package branch_mixed
+
+// Mixed forward branches (if/else) and loop back-edges.
+limit = 1000000
+sum = 0
+hits = 0
+index = 0
+loop index < limit {
+    seed = index * 1664525 + 1013904223
+    if seed % 3 == 0 {
+        sum = sum + index
+    } else if seed % 3 == 1 {
+        hits = hits + 1
+    } else {
+        sum = sum - 1
+    }
+    index = index + 1
+}
+
+print("sum=", sum, " hits=", hits)
+println("")

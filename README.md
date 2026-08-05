@@ -21,11 +21,10 @@ the reference interpreter's semantics.
 ### Linux / macOS
 
 ```bash
-./build.sh
-# or manually:
-clang++ -std=c++20 -pthread -O3 -Iinclude src/main.cpp -o munxc
-# x86_64 only (optional SIMD tuning):
-# clang++ -std=c++20 -pthread -O3 -mavx2 -mfma -Iinclude src/main.cpp -o munxc
+./build.sh              # delegates to compile.sh (release, -fno-exceptions)
+./compile.sh            # explicit release build with extensive warning/opt flags
+BUILD_TYPE=debug ./compile.sh
+BUILD_TYPE=sanitize ./compile.sh
 
 ./munxc sample/logscope/main.mx                      # emit main.mxb
 ./munxc --run sample/logscope/main.mx access.log     # compile, then execute (JIT default)
@@ -48,10 +47,24 @@ MUNX_VM_JIT=0 ./munxc --run sample/logscope/main.mxb access.log
 Or with CMake:
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -G Ninja -DMUNX_BUILD_TESTS=ON
 cmake --build build
-./build/munxc --run sample/valid/01_package_imports.mx
+ctest --test-dir build --output-on-failure
+./build/munxc --run tests/programs/hello.mx
 ```
+
+### Tests
+
+GoogleTest drives `munxc` as a subprocess to verify compile + run:
+
+```bash
+cmake -S . -B build -G Ninja -DMUNX_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Runnable fixtures live in `tests/programs/`. CI is defined in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ### Windows
 
@@ -95,6 +108,35 @@ By default the VM uses a **threaded JIT**: bytecode is optimized (constant
 folding, dead `POP` removal, jump threading), compiled into a direct dispatch
 table, and cached per function body. Use `--interp` or `MUNX_VM_JIT=0` to force
 the reference switch-dispatch interpreter in `include/vm.hpp`.
+
+The JIT uses dense handler indexing and fall-through chaining so sequential
+bytecode avoids hash-map lookups between instructions. Conditional jumps
+(`JMP_IF_*`) use a hybrid branch predictor (global-history perceptron + bimodal
+counter + dedicated 256-entry loop/back-edge table keyed by `branch_pc >> 4`)
+in `include/jit/branch_predictor.hpp` to prefetch the next handler.
+
+**Profile-guided optimization (runtime PGO)** is always on unless disabled:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `MUNX_VM_PGO` | on | Specialize strongly biased branches; re-JIT when runtime profile matures |
+| `MUNX_VM_JIT_WARMUP` | `0` | Interpret N invocations per function before JIT (seeds profile + predictor) |
+
+The interpreter records branch/block profiles into `include/jit/execution_profile.hpp`.
+On JIT compile, static back-edge seeding plus profile data warm-start the
+predictor; mature profiles drive bytecode specialization in
+`include/jit/pgo_optimizer.hpp` (remove never-taken branches, fold always-taken
+into unconditional jumps). During JIT execution, per-unit `runtime_profile`
+counters trigger recompilation when a function is invoked again after enough
+branch samples.
+
+```bash
+# Branch microbenchmarks (disable pipe hub for clean timing)
+MUNX_PIPE_HUB=0 ./tools/bench_branch.sh
+MUNX_PIPE_HUB=0 ./munxc --run sample/bench/branch_count.mx
+MUNX_PIPE_HUB=0 ./munxc --run sample/bench/branch_nested.mx
+MUNX_VM_JIT_WARMUP=1 ./munxc --run sample/bench/branch_mixed.mx
+```
 
 ```bash
 ./munxc --run sample/logscope/main.mx access.log --output report.txt

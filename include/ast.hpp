@@ -117,16 +117,16 @@ namespace munx::ast
             value;
 
         /// Build a primitive type node at optional @p loc.
-        static type_node make_primitive(primitive_kind p, source_loc loc = {})
+        static type_node make_primitive(primitive_kind p, const source_loc &loc = {})
         {
             type_node node{loc, type_kind::Primitive, primitive_type{p}};
             return node;
         }
 
         /// Build a named type node for @p name at optional @p loc.
-        static type_node make_named(std::string name, source_loc loc = {})
+        static type_node make_named(const std::string &name, const source_loc &loc = {})
         {
-            type_node node{loc, type_kind::Named, named_type{std::move(name)}};
+            type_node node{loc, type_kind::Named, named_type{name}};
             return node;
         }
     };
@@ -426,7 +426,7 @@ namespace munx::ast
 
     /// Build an @ref expr_node from @p payload, setting @ref expr_type from the variant index.
     template <typename T>
-    inline expr_node make_expr(T payload, source_loc loc = {})
+    inline expr_node make_expr(T payload, const source_loc &loc = {})
     {
         expr_node node{};
         node.loc = loc;
@@ -437,7 +437,7 @@ namespace munx::ast
 
     /// Heap-allocate an expression node (see @ref make_expr).
     template <typename T>
-    inline std::unique_ptr<expr_node> make_expr_ptr(T payload, source_loc loc = {})
+    inline std::unique_ptr<expr_node> make_expr_ptr(T payload, const source_loc &loc = {})
     {
         return std::make_unique<expr_node>(make_expr(std::move(payload), loc));
     }
@@ -663,7 +663,7 @@ namespace munx::ast
 
     /// Build a @ref stmt_node from @p payload, setting @ref stmt_type from the variant index.
     template <typename T>
-    inline stmt_node make_stmt(T payload, source_loc loc = {})
+    inline stmt_node make_stmt(T payload, const source_loc &loc = {})
     {
         stmt_node node{};
         node.loc = loc;
@@ -674,7 +674,7 @@ namespace munx::ast
 
     /// Heap-allocate a statement node (see @ref make_stmt).
     template <typename T>
-    inline std::unique_ptr<stmt_node> make_stmt_ptr(T payload, source_loc loc = {})
+    inline std::unique_ptr<stmt_node> make_stmt_ptr(T payload, const source_loc &loc = {})
     {
         return std::make_unique<stmt_node>(make_stmt(std::move(payload), loc));
     }

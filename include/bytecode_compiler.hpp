@@ -38,7 +38,7 @@ using vm::debug_loc_entry;
         std::ifstream input{path};
         if (!input)
         {
-            throw munx::compilation_error{"could not open source file: " + path.string()};
+            fail_compile("could not open source file: " + path.string());
         }
         input.seekg(0, std::ios::end);
         const std::streamsize size = input.tellg();
@@ -75,20 +75,20 @@ using vm::debug_loc_entry;
     /// @return The program on success, or empty optional after printing the error.
     inline std::optional<ast::program> compile_file(const std::filesystem::path &source_path)
     {
-        try
-        {
+        std::optional<ast::program> program;
+        const munx::error compile_error = munx::run_compile_boundary([&] {
             const std::string source = read_file(source_path);
             munx::lexer lex{source, munx::keywords(), source_path};
             std::vector<munx::token> tokens = lex.read_tokens();
             parser parse{std::move(tokens), source_path};
-            munx::ast::program program = parse.parse_program();
-            return program;
-        }
-        catch (const munx::compilation_error &error)
+            program = parse.parse_program();
+        });
+        if (!compile_error.ok())
         {
-            std::cerr << error.what() << '\n';
+            std::cerr << compile_error.message << '\n';
             return {};
         }
+        return program;
     }
 
 /// View wrapper so @ref formatter can stream a path set via ADL.
@@ -379,7 +379,7 @@ struct compiled_package
 {
     std::ostringstream out;
     out << loc << ": error: " << message;
-    throw compilation_error{out.str()};
+    fail_compile(out.str());
 }
 
 /// Emits stack-VM bytecode for one code blob: either a function body or a
@@ -471,7 +471,7 @@ private:
     // -- helpers ------------------------------------------------------------
 
     /// Compile @p body as a function named @p name using a fresh emitter.
-    compiled_function compile_function(std::string name,
+    compiled_function compile_function(const std::string &name,
                                        const std::vector<ast::parameter> &parameters,
                                        const ast::block_stmt &body,
                                        const ast::type_node *return_type)
@@ -479,7 +479,7 @@ private:
         code_emitter nested{strings_, functions_, lambda_counter_, object_types_, types_};
         nested.debug_map_.clear();
         compiled_function result{
-            std::move(name),
+            name,
             nested.emit_function_code(parameters, body, return_type),
             std::move(nested.debug_map_)};
         return result;
@@ -1353,8 +1353,8 @@ public:
       resolver_.resolve();
       if (!resolver_.ok)
       {
-          throw compilation_error{"failed to resolve imports of package `" +
-                                  main_.package_name + "`"};
+          fail_compile("failed to resolve imports of package `" +
+                       main_.package_name + "`");
       }
       type_map_ = type_checker::check_packages_annotated(
           resolver_.main_dir_path(), main_, resolver_.imports_package_programs);
@@ -1375,13 +1375,13 @@ public:
       std::ofstream output{output_path, std::ios::binary};
       if (!output)
       {
-          throw compilation_error{"could not open output file: " + output_path.string()};
+          fail_compile("could not open output file: " + output_path.string());
       }
       output.write(reinterpret_cast<const char *>(image.data()),
                    static_cast<std::streamsize>(image.size()));
       if (!output)
       {
-          throw compilation_error{"failed to write output file: " + output_path.string()};
+          fail_compile("failed to write output file: " + output_path.string());
       }
       return image.size();
   }

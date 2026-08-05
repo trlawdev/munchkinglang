@@ -1,0 +1,12 @@
+package functions
+
+func add(left: int, right: int): int {
+    return left + right
+}
+
+func double(n: int): int {
+    return n * 2
+}
+
+print("add=", add(3, 4), " double=", double(21))
+println("")

@@ -49,8 +49,9 @@ inline std::vector<std::byte> optimize_bytecode(std::span<const std::byte> sourc
 
     struct pending_fold
     {
-        enum class kind { Int, Bool, None } tag{kind::None};
+        enum class kind { None, Int, IntPair, Bool } tag{kind::None};
         int64_t i64{0};
+        int64_t i64_left{0};
         bool flag{false};
     };
 
@@ -69,6 +70,12 @@ inline std::vector<std::byte> optimize_bytecode(std::span<const std::byte> sourc
         switch (pending.tag)
         {
         case pending_fold::kind::Int:
+            emit_opcode(Opcode::PUSH_INT);
+            emit_scalar(pending.i64);
+            break;
+        case pending_fold::kind::IntPair:
+            emit_opcode(Opcode::PUSH_INT);
+            emit_scalar(pending.i64_left);
             emit_opcode(Opcode::PUSH_INT);
             emit_scalar(pending.i64);
             break;
@@ -138,6 +145,13 @@ inline std::vector<std::byte> optimize_bytecode(std::span<const std::byte> sourc
             const int64_t value = cursor.read_scalar<int64_t>();
             if (pending.tag == pending_fold::kind::Int)
             {
+                pending.i64_left = pending.i64;
+                pending.i64 = value;
+                pending.tag = pending_fold::kind::IntPair;
+                continue;
+            }
+            if (pending.tag == pending_fold::kind::IntPair)
+            {
                 flush_pending();
             }
             pending.tag = pending_fold::kind::Int;
@@ -163,6 +177,31 @@ inline std::vector<std::byte> optimize_bytecode(std::span<const std::byte> sourc
             continue;
         }
 
+        if (pending.tag == pending_fold::kind::IntPair &&
+            (opcode == Opcode::ADD || opcode == Opcode::SUB || opcode == Opcode::MUL ||
+             opcode == Opcode::DIV || opcode == Opcode::MOD || opcode == Opcode::BITWISE_AND ||
+             opcode == Opcode::BITWISE_OR || opcode == Opcode::BITWISE_XOR))
+        {
+            const int64_t right = pending.i64;
+            const int64_t left = pending.i64_left;
+            pending.tag = pending_fold::kind::None;
+            pending_pc.reset();
+            record_pc(insn_start);
+            if (const std::optional<int64_t> folded = try_fold_binary_int(opcode, left, right))
+            {
+                pending.tag = pending_fold::kind::Int;
+                pending.i64 = *folded;
+                pending_pc = insn_start;
+                continue;
+            }
+            emit_opcode(Opcode::PUSH_INT);
+            emit_scalar(left);
+            emit_opcode(Opcode::PUSH_INT);
+            emit_scalar(right);
+            emit_opcode(opcode);
+            continue;
+        }
+
         if (pending.tag == pending_fold::kind::Int &&
             (opcode == Opcode::ADD || opcode == Opcode::SUB || opcode == Opcode::MUL ||
              opcode == Opcode::DIV || opcode == Opcode::MOD || opcode == Opcode::BITWISE_AND ||
@@ -172,21 +211,25 @@ inline std::vector<std::byte> optimize_bytecode(std::span<const std::byte> sourc
             pending.tag = pending_fold::kind::None;
             pending_pc.reset();
             record_pc(insn_start);
-            if (cursor.peek_u8() != static_cast<uint8_t>(Opcode::PUSH_INT))
+            emit_opcode(Opcode::PUSH_INT);
+            emit_scalar(right);
+            emit_opcode(opcode);
+            continue;
+        }
+
+        if (pending.tag == pending_fold::kind::IntPair &&
+            (opcode == Opcode::EQ || opcode == Opcode::NE || opcode == Opcode::LT ||
+             opcode == Opcode::GT || opcode == Opcode::LE || opcode == Opcode::GE))
+        {
+            const int64_t right = pending.i64;
+            const int64_t left = pending.i64_left;
+            pending.tag = pending_fold::kind::None;
+            pending_pc.reset();
+            record_pc(insn_start);
+            if (const std::optional<bool> folded = try_fold_compare_int(opcode, left, right))
             {
-                emit_opcode(Opcode::PUSH_INT);
-                emit_scalar(right);
-                emit_opcode(opcode);
-                continue;
-            }
-            const size_t push_start = cursor.pc;
-            cursor.read_u8();
-            const int64_t left = cursor.read_scalar<int64_t>();
-            record_pc(push_start);
-            if (const std::optional<int64_t> folded = try_fold_binary_int(opcode, left, right))
-            {
-                pending.tag = pending_fold::kind::Int;
-                pending.i64 = *folded;
+                pending.tag = pending_fold::kind::Bool;
+                pending.flag = *folded;
                 pending_pc = insn_start;
                 continue;
             }
@@ -206,26 +249,6 @@ inline std::vector<std::byte> optimize_bytecode(std::span<const std::byte> sourc
             pending.tag = pending_fold::kind::None;
             pending_pc.reset();
             record_pc(insn_start);
-            if (cursor.peek_u8() != static_cast<uint8_t>(Opcode::PUSH_INT))
-            {
-                emit_opcode(Opcode::PUSH_INT);
-                emit_scalar(right);
-                emit_opcode(opcode);
-                continue;
-            }
-            const size_t push_start = cursor.pc;
-            cursor.read_u8();
-            const int64_t left = cursor.read_scalar<int64_t>();
-            record_pc(push_start);
-            if (const std::optional<bool> folded = try_fold_compare_int(opcode, left, right))
-            {
-                pending.tag = pending_fold::kind::Bool;
-                pending.flag = *folded;
-                pending_pc = insn_start;
-                continue;
-            }
-            emit_opcode(Opcode::PUSH_INT);
-            emit_scalar(left);
             emit_opcode(Opcode::PUSH_INT);
             emit_scalar(right);
             emit_opcode(opcode);

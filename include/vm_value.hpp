@@ -5,7 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
-#include <exception>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -237,8 +237,8 @@ struct value
     {}
 
     /// Construct a string value from a UTF-8 payload (heap-allocated, ref-counted).
-    value(std::string text)
-        : data(string_value{std::make_shared<std::string>(std::move(text))})
+    value(const std::string &text)
+        : data(string_value{std::make_shared<std::string>(text)})
     {}
 
     template <typename T>
@@ -281,11 +281,106 @@ struct buffer_object
     bool released{false};
 };
 
-/// Throw a munx runtime error carrying @p message.
-[[noreturn]] inline void throw_error(const std::string &message);
+/// Captured munx runtime fault (delivered to `trap` handlers when applicable).
+struct runtime_fault
+{
+    bool active{false};
+    value payload{};
+    std::string message{};
+    std::vector<stack_frame_info> stack_trace{};
+
+    void clear() noexcept
+    {
+        active = false;
+        payload = value{};
+        message.clear();
+        stack_trace.clear();
+    }
+};
+
+inline thread_local runtime_fault tls_runtime_fault{};
+/// Non-zero while `execute` / `execute_jit` is dispatching opcodes.
+inline thread_local unsigned vm_dispatch_depth{0};
+
+class virtual_machine;
+
+inline thread_local virtual_machine *active_virtual_machine{nullptr};
+
+inline void capture_runtime_fault(const std::string &message,
+                                  exception_kind kind = exception_kind::Error)
+{
+    tls_runtime_fault.active = true;
+    tls_runtime_fault.payload = value{exception_value{kind, message}};
+    tls_runtime_fault.message =
+        std::get<exception_value>(tls_runtime_fault.payload.data).message;
+    tls_runtime_fault.stack_trace = snapshot_call_stack();
+}
+
+[[nodiscard]] inline bool runtime_fault_pending() noexcept
+{
+    return tls_runtime_fault.active;
+}
+
+/// Record a runtime fault. When called inside VM dispatch, returns to the caller
+/// so the execute loop can deliver traps or propagate the fault.
+inline void throw_error(const std::string &message)
+{
+    capture_runtime_fault(message);
+    if (vm_dispatch_depth > 0)
+    {
+        return;
+    }
+    std::fprintf(stderr, "runtime error: %s\n", tls_runtime_fault.message.c_str());
+    std::abort();
+}
+
+inline void throw_division_by_zero(const std::string &context)
+{
+    capture_runtime_fault(context, exception_kind::DivisionByZero);
+    if (vm_dispatch_depth > 0)
+    {
+        return;
+    }
+    std::fprintf(stderr, "division by zero: %s\n", context.c_str());
+    std::abort();
+}
+
+inline void throw_overflow(const std::string &context)
+{
+    capture_runtime_fault(context, exception_kind::Overflow);
+    if (vm_dispatch_depth > 0)
+    {
+        return;
+    }
+    std::fprintf(stderr, "overflow: %s\n", context.c_str());
+    std::abort();
+}
+
+/// RAII: marks nested VM opcode dispatch for fault propagation.
+struct vm_dispatch_scope
+{
+    explicit vm_dispatch_scope(virtual_machine &machine)
+    {
+        ++vm_dispatch_depth;
+        active_virtual_machine = &machine;
+    }
+
+    ~vm_dispatch_scope()
+    {
+        if (vm_dispatch_depth > 0)
+        {
+            --vm_dispatch_depth;
+        }
+        if (vm_dispatch_depth == 0)
+        {
+            active_virtual_machine = nullptr;
+        }
+    }
+};
+
+inline const char *type_name(const value &item);
 
 /// Release @p buffer when its reference count is exactly one.
-/// @throws runtime_exception when other bindings still hold the buffer.
 inline void release_buffer(const buffer_ref &buffer, const std::string &name)
 {
     if (buffer->released)
@@ -384,51 +479,6 @@ struct thread_object
     }
 };
 
-/// A munx-level error. Carries the value delivered to a `trap` handler.
-class runtime_exception : public std::exception
-{
-    value payload_;
-    std::string message_;
-    std::vector<stack_frame_info> stack_trace_;
-
-public:
-    explicit runtime_exception(std::string message)
-        : payload_(value{exception_value{exception_kind::Error, std::move(message)}}),
-          message_(std::get<exception_value>(payload_.data).message),
-          stack_trace_(snapshot_call_stack())
-    {}
-
-    runtime_exception(exception_value payload, std::string message)
-        : payload_(value{std::move(payload)}),
-          message_(std::move(message)),
-          stack_trace_(snapshot_call_stack())
-    {}
-
-    const value &payload() const noexcept { return payload_; }
-    const std::vector<stack_frame_info> &stack_trace() const noexcept
-    {
-        return stack_trace_;
-    }
-    const char *what() const noexcept override { return message_.c_str(); }
-};
-
-/// Throw a munx runtime error carrying @p message.
-[[noreturn]] inline void throw_error(const std::string &message)
-{
-    throw runtime_exception{message};
-}
-
-[[noreturn]] inline void throw_division_by_zero(const std::string &context)
-{
-    throw runtime_exception(
-        exception_value{exception_kind::DivisionByZero, context}, context);
-}
-
-[[noreturn]] inline void throw_overflow(const std::string &context)
-{
-    throw runtime_exception(exception_value{exception_kind::Overflow, context},
-                            context);
-}
 inline const char *type_name(const value &item)
 {
     struct namer
@@ -461,9 +511,9 @@ inline const char *type_name(const value &item)
 }
 
 /// @return A ref-counted string value owning @p text.
-inline string_value make_string(std::string text)
+inline string_value make_string(const std::string &text)
 {
-    return string_value{std::make_shared<std::string>(std::move(text))};
+    return string_value{std::make_shared<std::string>(text)};
 }
 
 /// @return Pointer to the UTF-8 text, or null when @p item is not a string.
@@ -494,6 +544,8 @@ inline map_ref expect_map(const value &item, std::string_view context)
         return map->data;
     }
     throw_error(std::string{context} + " expected a map, got " + type_name(item));
+    static map_ref k_empty = std::make_shared<map_object>();
+    return k_empty;
 }
 
 /// @return The UTF-8 text of @p item.
@@ -505,6 +557,8 @@ inline const std::string &string_data(const value &item)
         return *text;
     }
     throw_error(std::string{"expected a string, got "} + type_name(item));
+    static const std::string k_empty;
+    return k_empty;
 }
 
 /// Deep-copy a user object for by-value returns.
@@ -519,7 +573,7 @@ inline object_ref clone_object(const object_ref &object)
 
 /// Clone reference-type return values according to the munx value model:
 /// user objects are copied; everything else is returned as-is.
-inline value clone_for_return(value item)
+inline value clone_for_return(const value &item)
 {
     if (const auto *object = item.get_if<object_ref>())
     {
@@ -643,7 +697,7 @@ inline std::string to_display_string(const value &item)
         {
             std::string text = "map{";
             bool first = true;
-            for (const auto &[key, item] : map.data->entries)
+            for (const auto &[key, entry] : map.data->entries)
             {
                 if (!first)
                 {
@@ -652,7 +706,7 @@ inline std::string to_display_string(const value &item)
                 first = false;
                 text += to_display_string(key);
                 text += ": ";
-                text += to_display_string(item);
+                text += to_display_string(entry);
             }
             text += '}';
             return text;
@@ -764,6 +818,7 @@ inline int64_t as_integer(const value &item)
         return static_cast<int64_t>(*number);
     }
     throw_error(std::string{"expected a number, got "} + type_name(item));
+    return 0;
 }
 
 /// @return @p item widened to `double`.
@@ -859,7 +914,7 @@ inline const value *map_find_entry(const map_object &map, const value &key)
     return nullptr;
 }
 
-inline void map_store_entry(map_object &map, value key, value item)
+inline void map_store_entry(map_object &map, value &key, value &item)
 {
     if (value *existing = map_find_entry(map, key))
     {
@@ -873,7 +928,12 @@ inline void map_merge(map_object &target, const map_object &patch)
 {
     for (const auto &[key, item] : patch.entries)
     {
-        map_store_entry(target, key, item);
+        if (value *existing = map_find_entry(target, key))
+        {
+            *existing = item;
+            continue;
+        }
+        target.entries.emplace_back(key, item);
     }
 }
 

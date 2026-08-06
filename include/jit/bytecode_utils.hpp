@@ -36,7 +36,7 @@ struct bytecode_cursor
     {
         if (pc >= code.size())
         {
-            throw compilation_error{"bytecode ended unexpectedly"};
+            fail_compile("bytecode ended unexpectedly");
         }
         return std::to_integer<uint8_t>(code[pc]);
     }
@@ -45,7 +45,7 @@ struct bytecode_cursor
     {
         if (pc >= code.size())
         {
-            throw compilation_error{"bytecode ended mid-instruction"};
+            fail_compile("bytecode ended mid-instruction");
         }
         return std::to_integer<uint8_t>(code[pc++]);
     }
@@ -55,7 +55,7 @@ struct bytecode_cursor
     {
         if (pc + sizeof(T) > code.size())
         {
-            throw compilation_error{"bytecode ended mid-operand"};
+            fail_compile("bytecode ended mid-operand");
         }
         T item{};
         std::memcpy(&item, code.data() + pc, sizeof(T));
@@ -69,7 +69,7 @@ struct bytecode_cursor
         const auto length = read_scalar<uint32_t>();
         if (offset > strings.size() || length > strings.size() - offset)
         {
-            throw compilation_error{"string operand is outside the string table"};
+            fail_compile("string operand is outside the string table");
         }
         return std::string{strings.substr(offset, length)};
     }
@@ -96,6 +96,20 @@ struct bytecode_cursor
             {
                 target.elements.push_back(read_type());
             }
+            break;
+        }
+        case ast::type_kind::Map:
+            target.elements.push_back(read_type());
+            target.elements.push_back(read_type());
+            break;
+        case ast::type_kind::Lambda:
+        {
+            const auto count = read_scalar<uint32_t>();
+            for (uint32_t index = 0; index < count; ++index)
+            {
+                target.elements.push_back(read_type());
+            }
+            target.elements.push_back(read_type());
             break;
         }
         }

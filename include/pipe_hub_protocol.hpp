@@ -3,13 +3,11 @@
 #include "platform.hpp"
 #include "vm_value.hpp"
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +19,14 @@
 
 namespace munx::vm::pipe_hub
 {
+
+inline thread_local bool protocol_error_flag{false};
+
+inline void fail_protocol(const char *message)
+{
+    (void)message;
+    protocol_error_flag = true;
+}
 
 enum class opcode : uint8_t
 {
@@ -103,7 +109,7 @@ inline void append_string(std::vector<std::byte> &buffer, std::string_view text)
 {
     if (text.size() > std::numeric_limits<uint32_t>::max())
     {
-        throw std::runtime_error("pipe hub string exceeds the 32-bit length limit");
+        fail_protocol("pipe hub string exceeds the 32-bit length limit");
     }
     append_u32(buffer, static_cast<uint32_t>(text.size()));
     for (const char letter : text)
@@ -117,7 +123,7 @@ inline void append_bytes(std::vector<std::byte> &buffer,
 {
     if (bytes.size() > std::numeric_limits<uint32_t>::max())
     {
-        throw std::runtime_error("pipe hub payload exceeds the 32-bit length limit");
+        fail_protocol("pipe hub payload exceeds the 32-bit length limit");
     }
     append_u32(buffer, static_cast<uint32_t>(bytes.size()));
     buffer.insert(buffer.end(), bytes.begin(), bytes.end());
@@ -181,7 +187,7 @@ private:
     {
         if (cursor_ + count > data_.size())
         {
-            throw std::runtime_error("truncated pipe hub message");
+            fail_protocol("truncated pipe hub message");
         }
         const std::span<const std::byte> slice{data_.data() + cursor_, count};
         cursor_ += count;
@@ -193,7 +199,7 @@ inline std::vector<std::byte> encode_frame(std::span<const std::byte> body)
 {
     if (body.size() > std::numeric_limits<uint32_t>::max())
     {
-        throw std::runtime_error("pipe hub frame exceeds the 32-bit length limit");
+        fail_protocol("pipe hub frame exceeds the 32-bit length limit");
     }
     std::vector<std::byte> frame;
     frame.reserve(sizeof(uint32_t) + body.size());

@@ -1,0 +1,4 @@
+package hello
+
+print("hello")
+println("")

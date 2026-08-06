@@ -14,6 +14,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -22,14 +23,12 @@
 namespace
 {
 
-    /// Read the entire contents of @p path as a string.
-    /// @throws munx::compilation_error if the file cannot be opened.
-    std::string read_file(const std::filesystem::path &path)
+    std::string read_file_or_fail(const std::filesystem::path &path)
     {
         std::ifstream input{path};
         if (!input)
         {
-            throw munx::compilation_error{"could not open source file: " + path.string()};
+            munx::fail_compile("could not open source file: " + path.string());
         }
         input.seekg(0, std::ios::end);
         const std::streamsize size = input.tellg();
@@ -43,7 +42,6 @@ namespace
         return contents;
     }
 
-    /// Print CLI usage for @p program to stderr.
     void print_usage(const char *program)
     {
         std::cerr << "Usage: " << program << " <file.mx>\n"
@@ -67,7 +65,6 @@ namespace
                   << "Use --files to compile multiple source files in one invocation.\n";
     }
 
-    /// Dump @p tokens as `type @ line:col payload` lines.
     void print_tokens(const std::vector<munx::token> &tokens)
     {
         for (const auto &tok : tokens)
@@ -90,18 +87,11 @@ namespace
         }
     }
 
-    /// Lex, parse, and compile one source file to bytecode (the default),
-    /// or print its token stream / AST instead.
-    /// @param tokens_only If true, print the token stream and stop.
-    /// @param label_file If true, prefix printed output with `; file: path`.
-    /// @param print_ast If true, print the AST instead of emitting bytecode.
-    /// @return True on success; false after printing a compilation error.
     bool compile_file(const std::filesystem::path &source_path, bool tokens_only,
                       bool label_file, bool print_ast)
     {
-        try
-        {
-            const std::string source = read_file(source_path);
+        const munx::error compile_error = munx::run_compile_boundary([&] {
+            const std::string source = read_file_or_fail(source_path);
             munx::lexer lex{source, munx::keywords(), source_path};
             std::vector<munx::token> tokens = lex.read_tokens();
 
@@ -112,7 +102,7 @@ namespace
                     std::cout << "; file: " << source_path.string() << '\n';
                 }
                 print_tokens(tokens);
-                return true;
+                return;
             }
 
             munx::parser parse{std::move(tokens), source_path};
@@ -126,7 +116,7 @@ namespace
                 }
                 munx::ast_printer printer{std::cout};
                 printer.print(program);
-                return true;
+                return;
             }
 
             munx::bytecode_compiler compiler{source_path.parent_path(), program};
@@ -135,66 +125,58 @@ namespace
             const size_t written = compiler.compile_to_file(output_path);
             std::cout << "wrote " << output_path.string() << " (" << written
                       << " bytes)\n";
-            return true;
-        }
-        catch (const munx::compilation_error &error)
+        });
+        if (!compile_error.ok())
         {
-            std::cerr << error.what() << '\n';
+            std::cerr << compile_error.message << '\n';
             return false;
         }
+        return true;
     }
 
-    /// Validate and disassemble one bytecode image.
     bool decode_file(const std::filesystem::path &path, bool label_file)
     {
-        try
-        {
+        const munx::error compile_error = munx::run_compile_boundary([&] {
             if (label_file)
             {
                 std::cout << "; file: " << path.string() << '\n';
             }
             munx::decode_bytecode_file(path, std::cout);
-            return true;
-        }
-        catch (const munx::compilation_error &error)
+        });
+        if (!compile_error.ok())
         {
-            std::cerr << error.what() << '\n';
+            std::cerr << compile_error.message << '\n';
             return false;
         }
+        return true;
     }
 
-    /// Validate and reconstruct source-like Munx from one bytecode image.
     bool decompile_file(const std::filesystem::path &path, bool label_file)
     {
-        try
-        {
+        const munx::error compile_error = munx::run_compile_boundary([&] {
             if (label_file)
             {
                 std::cout << "// file: " << path.string() << '\n';
             }
             munx::decompile_bytecode_file(path, std::cout);
-            return true;
-        }
-        catch (const munx::compilation_error &error)
+        });
+        if (!compile_error.ok())
         {
-            std::cerr << error.what() << '\n';
+            std::cerr << compile_error.message << '\n';
             return false;
         }
+        return true;
     }
 
-    /// Execute one program on the munx VM, compiling it first when @p path is
-    /// a `.mx` source file.
-    /// @param arguments Values exposed to the program as `argv`.
-    /// @return The program's exit status, or 1 if it could not be loaded.
     int run_program(const std::filesystem::path &path,
                     std::vector<std::string> arguments)
     {
-        try
-        {
-            std::filesystem::path image = path;
+        std::filesystem::path image = path;
+        int exit_status = 1;
+        const munx::error compile_error = munx::run_compile_boundary([&] {
             if (path.extension() != ".mxb")
             {
-                std::string source = read_file(path);
+                const std::string source = read_file_or_fail(path);
                 munx::lexer lex{source, munx::keywords(), path};
                 munx::parser parse{lex.read_tokens(), path};
                 const munx::ast::program program = parse.parse_program();
@@ -202,20 +184,18 @@ namespace
                 image.replace_extension(".mxb");
                 compiler.compile_to_file(image);
             }
-            return munx::vm::run_bytecode_file(image, std::move(arguments));
-        }
-        catch (const munx::compilation_error &error)
+            exit_status = munx::vm::run_bytecode_file(image, arguments);
+        });
+        if (!compile_error.ok())
         {
-            std::cerr << error.what() << '\n';
+            std::cerr << compile_error.message << '\n';
             return 1;
         }
+        return exit_status;
     }
 
 } // namespace
 
-/// Munx compiler CLI: compile `.mx` files to bytecode (`<file>.mxb`).
-/// Supports `--ast` / `--tokens` for front-end debugging and `--files`
-/// for multi-file batches.
 int main(int argc, char *argv[])
 {
 #if MUNX_VM_HAS_NAMED_PIPES
@@ -245,7 +225,6 @@ int main(int argc, char *argv[])
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg{argv[i]};
-        // Once --run has its program, everything left belongs to the program.
         if (run_program_flag && !source_paths.empty())
         {
             program_arguments.push_back(arg);
@@ -277,7 +256,6 @@ int main(int argc, char *argv[])
         else if (arg == "--files")
         {
             files_mode = true;
-            // Collect every subsequent non-option argument as a source file.
             for (++i; i < argc; ++i)
             {
                 const std::string file_arg{argv[i]};
@@ -313,7 +291,6 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Single-file form without --files: exactly one path expected.
     if (!files_mode && source_paths.size() > 1)
     {
         std::cerr << "Multiple source files require --files\n";

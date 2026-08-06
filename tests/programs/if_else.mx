@@ -1,0 +1,11 @@
+package if_else
+
+value = 7
+result = 0
+if value > 5 {
+    result = 1
+} else {
+    result = 2
+}
+print("result=", result)
+println("")

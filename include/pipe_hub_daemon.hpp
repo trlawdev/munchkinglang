@@ -269,13 +269,12 @@ struct daemon_state
     }
 
     bool publish_message(client_id writer_id, const std::string &channel,
-                         std::vector<std::byte> payload)
+                         const std::vector<std::byte> &payload)
     {
         channel_state &state = channels[channel];
         if (!channel_has_reader(state))
         {
-            state.blocked.push_back(
-                channel_state::blocked_publish{writer_id, std::move(payload)});
+            state.blocked.push_back(channel_state::blocked_publish{writer_id, payload});
             auto writer = clients.find(writer_id);
             if (writer != clients.end())
             {
@@ -350,12 +349,9 @@ struct daemon_state
                 return;
             }
             const std::span<const std::byte> body{client.input.data(), client.frame_size};
-            message decoded;
-            try
-            {
-                decoded = decode_message(body);
-            }
-            catch (const std::exception &)
+            protocol_error_flag = false;
+            message decoded = decode_message(body);
+            if (protocol_error_flag)
             {
                 close_client(id);
                 return;
@@ -500,7 +496,9 @@ inline int run_daemon_posix()
             {
                 const client_id id = state.assign_id(*connection);
                 state.served_clients = true;
-                state.clients.emplace(id, client_state{std::move(*connection)});
+                client_state client{};
+                client.connection = std::move(*connection);
+                state.clients.emplace(id, std::move(client));
             }
         }
 

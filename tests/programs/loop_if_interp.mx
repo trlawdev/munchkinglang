@@ -1,0 +1,15 @@
+package loop_if_interp
+
+// Exercised under --interp: JIT currently mishandles if/else inside loops.
+hits = 0
+index = 0
+loop index < 10 {
+    if index < 5 {
+        hits = hits + 1
+    } else {
+        hits = hits + 0
+    }
+    index = index + 1
+}
+print("hits=", hits)
+println("")

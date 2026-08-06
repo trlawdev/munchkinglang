@@ -338,6 +338,20 @@ private:
             }
             return "tuple[" + join(elements, ", ") + ']';
         }
+        case ast::type_kind::Map:
+            return "map[" + decompile_type(input) + ", " + decompile_type(input) +
+                   ']';
+        case ast::type_kind::Lambda:
+        {
+            const uint32_t count = input.u32();
+            std::vector<std::string> params;
+            params.reserve(count);
+            for (uint32_t index = 0; index < count; ++index)
+            {
+                params.push_back(decompile_type(input));
+            }
+            return "lambda(" + join(params, ", ") + ") -> " + decompile_type(input);
+        }
         }
         return "unknown";
     }
@@ -621,15 +635,15 @@ inline void decompile_bytecode_file(const std::filesystem::path &path,
     std::ifstream input{path, std::ios::binary};
     if (!input)
     {
-        throw compilation_error{"could not open bytecode file: " +
-                                path.string()};
+        fail_compile("could not open bytecode file: " +
+                                path.string());
     }
     input.seekg(0, std::ios::end);
     const std::streamoff end = input.tellg();
     if (end < 0)
     {
-        throw compilation_error{"could not determine bytecode file size: " +
-                                path.string()};
+        fail_compile("could not determine bytecode file size: " +
+                                path.string());
     }
     input.seekg(0, std::ios::beg);
     std::vector<std::byte> image(static_cast<size_t>(end));
@@ -637,8 +651,8 @@ inline void decompile_bytecode_file(const std::filesystem::path &path,
                static_cast<std::streamsize>(image.size()));
     if (!input && !image.empty())
     {
-        throw compilation_error{"failed to read bytecode file: " +
-                                path.string()};
+        fail_compile("failed to read bytecode file: " +
+                                path.string());
     }
     bytecode_decompiler decompiler{image, out};
     decompiler.decompile();

@@ -1,26 +1,51 @@
 #pragma once
 
+#include "branch_predictor.hpp"
+#include "execution_profile.hpp"
 #include "jit_compiler.hpp"
+#include "pgo_optimizer.hpp"
+#include "vm_pipeline.hpp"
 
 namespace munx::vm::jit
 {
 
+inline void compile_handlers(compiled_unit &unit, virtual_machine &,
+                             std::string_view strings);
+
 inline std::shared_ptr<compiled_unit>
 compile_unit(virtual_machine &vm, std::span<const std::byte> source,
-             std::string_view strings)
+             std::string_view strings, const execution_profile *profile)
 {
     auto unit = std::make_shared<compiled_unit>();
-    unit->code = optimize_bytecode(source, strings);
+    unit->code = optimize_bytecode_with_profile(source, strings, profile);
+    if (profile != nullptr)
+    {
+        unit->profile_generation = profile->generation;
+    }
 
-    bytecode_cursor cursor{unit->code, strings};
+    branch_predictor &predictor = branch_predictor::instance();
+    seed_predictor_from_bytecode(source, strings, predictor);
+    if (profile != nullptr)
+    {
+        predictor.seed_from_profile(*profile);
+    }
+
+    compile_handlers(*unit, vm, strings);
+    return unit;
+}
+
+inline void compile_handlers(compiled_unit &unit, virtual_machine &,
+                             std::string_view strings)
+{
+    bytecode_cursor cursor{unit.code, strings};
     while (!cursor.at_end())
     {
         const size_t insn_pc = cursor.pc;
         const auto opcode = static_cast<Opcode>(cursor.read_u8());
 
         auto bind = [&](jit_step step) {
-            unit->handler_at_pc.emplace(insn_pc, unit->handlers.size());
-            unit->handlers.push_back(std::move(step));
+            unit.handler_at_pc.emplace(insn_pc, unit.handlers.size());
+            unit.handlers.push_back(std::move(step));
         };
 
         switch (opcode)
@@ -136,8 +161,8 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
             const std::string name = cursor.read_name();
             bind([name](virtual_machine &machine, frame &current, size_t) {
                 current.pc += 1 + 8;
-                machine.jit_store_name(current, name,
-                                       virtual_machine::jit_pop(current));
+                value item = virtual_machine::jit_pop(current);
+                machine.jit_store_name(current, name, item);
             });
             break;
         }
@@ -219,11 +244,51 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
         case Opcode::JMP_IF_FALSE:
         {
             const uint32_t target = cursor.read_scalar<uint32_t>();
-            bind([target](virtual_machine &machine, frame &current, size_t) {
-                current.pc += 1 + sizeof(uint32_t);
-                if (!is_truthy(virtual_machine::jit_pop(current)))
+            const size_t branch_pc = insn_pc;
+            bind([target, branch_pc](virtual_machine &machine, frame &current, size_t) {
+                const size_t fallthrough_pc = branch_pc + 1 + sizeof(uint32_t);
+                const size_t jump_pc = machine.jit_jump_target(current, target);
+
+                branch_predictor &predictor = branch_predictor::instance();
+                const bool predicted_taken =
+                    predictor.predict(branch_pc, jump_pc, fallthrough_pc);
+                const size_t predicted_pc =
+                    predicted_taken ? jump_pc : fallthrough_pc;
+                current.pc = predicted_pc;
+
+                if (current.jit_unit &&
+                    predicted_pc < current.jit_unit->handler_index.size())
                 {
-                    current.pc = machine.jit_jump_target(current, target);
+                    const size_t next =
+                        current.jit_unit->handler_index[predicted_pc];
+                    if (next != compiled_unit::invalid_handler)
+                    {
+                        current.jit_next_handler = next;
+                    }
+                }
+
+                const bool actually_taken =
+                    !is_truthy(virtual_machine::jit_pop(current));
+                if (actually_taken != predicted_taken)
+                {
+                    current.pc = actually_taken ? jump_pc : fallthrough_pc;
+                    current.jit_next_handler.reset();
+                    if (current.jit_unit &&
+                        current.pc < current.jit_unit->handler_index.size())
+                    {
+                        const size_t next =
+                            current.jit_unit->handler_index[current.pc];
+                        if (next != compiled_unit::invalid_handler)
+                        {
+                            current.jit_next_handler = next;
+                        }
+                    }
+                }
+                predictor.train(branch_pc, actually_taken, jump_pc);
+                if (current.jit_unit)
+                {
+                    current.jit_unit->runtime_profile.record_branch(branch_pc,
+                                                                    actually_taken);
                 }
             });
             break;
@@ -231,11 +296,51 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
         case Opcode::JMP_IF_TRUE:
         {
             const uint32_t target = cursor.read_scalar<uint32_t>();
-            bind([target](virtual_machine &machine, frame &current, size_t) {
-                current.pc += 1 + sizeof(uint32_t);
-                if (is_truthy(virtual_machine::jit_pop(current)))
+            const size_t branch_pc = insn_pc;
+            bind([target, branch_pc](virtual_machine &machine, frame &current, size_t) {
+                const size_t fallthrough_pc = branch_pc + 1 + sizeof(uint32_t);
+                const size_t jump_pc = machine.jit_jump_target(current, target);
+
+                branch_predictor &predictor = branch_predictor::instance();
+                const bool predicted_taken =
+                    predictor.predict(branch_pc, jump_pc, fallthrough_pc);
+                const size_t predicted_pc =
+                    predicted_taken ? jump_pc : fallthrough_pc;
+                current.pc = predicted_pc;
+
+                if (current.jit_unit &&
+                    predicted_pc < current.jit_unit->handler_index.size())
                 {
-                    current.pc = machine.jit_jump_target(current, target);
+                    const size_t next =
+                        current.jit_unit->handler_index[predicted_pc];
+                    if (next != compiled_unit::invalid_handler)
+                    {
+                        current.jit_next_handler = next;
+                    }
+                }
+
+                const bool actually_taken =
+                    is_truthy(virtual_machine::jit_pop(current));
+                if (actually_taken != predicted_taken)
+                {
+                    current.pc = actually_taken ? jump_pc : fallthrough_pc;
+                    current.jit_next_handler.reset();
+                    if (current.jit_unit &&
+                        current.pc < current.jit_unit->handler_index.size())
+                    {
+                        const size_t next =
+                            current.jit_unit->handler_index[current.pc];
+                        if (next != compiled_unit::invalid_handler)
+                        {
+                            current.jit_next_handler = next;
+                        }
+                    }
+                }
+                predictor.train(branch_pc, actually_taken, jump_pc);
+                if (current.jit_unit)
+                {
+                    current.jit_unit->runtime_profile.record_branch(branch_pc,
+                                                                    actually_taken);
                 }
             });
             break;
@@ -301,8 +406,8 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
                 auto map = std::make_shared<map_object>();
                 for (size_t index = count; index > 0; --index)
                 {
-                    const value item = virtual_machine::jit_pop(current);
-                    const value key = virtual_machine::jit_pop(current);
+                    value item = virtual_machine::jit_pop(current);
+                    value key = virtual_machine::jit_pop(current);
                     map_store_entry(*map, key, item);
                 }
                 current.stack.push_back(value{map_value{std::move(map)}});
@@ -310,7 +415,7 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
             break;
         }
         case Opcode::INDEX_GET:
-            bind([](virtual_machine &machine, frame &current, size_t) {
+            bind([](virtual_machine &, frame &current, size_t) {
                 current.pc += 1;
                 const value index = virtual_machine::jit_pop(current);
                 const value container = virtual_machine::jit_pop(current);
@@ -321,7 +426,7 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
         case Opcode::MEMBER_GET:
         {
             const std::string member = cursor.read_name();
-            bind([member](virtual_machine &machine, frame &current, size_t) {
+            bind([member](virtual_machine &, frame &current, size_t) {
                 current.pc += 1 + 8;
                 const value container = virtual_machine::jit_pop(current);
                 current.stack.push_back(
@@ -429,7 +534,7 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
             const std::string name = cursor.read_name();
             bind([name](virtual_machine &machine, frame &current, size_t) {
                 current.pc += 1 + 8;
-                const value item = virtual_machine::jit_pop(current);
+                value item = virtual_machine::jit_pop(current);
                 machine.jit_pipe_insert(current, name, item);
                 current.stack.push_back(value{});
             });
@@ -529,11 +634,32 @@ compile_unit(virtual_machine &vm, std::span<const std::byte> source,
             });
             break;
         default:
-            throw compilation_error{"unsupported opcode in JIT compiler: " +
-                                    std::to_string(static_cast<int>(opcode))};
+            fail_compile("unsupported opcode in JIT compiler: " +
+                         std::to_string(static_cast<int>(opcode)));
         }
     }
 
+    unit.handler_index.assign(unit.code.size(), compiled_unit::invalid_handler);
+    for (const auto &[pc, index] : unit.handler_at_pc)
+    {
+        if (pc < unit.handler_index.size())
+        {
+            unit.handler_index[pc] = index;
+        }
+    }
+}
+
+inline std::shared_ptr<compiled_unit>
+recompile_with_runtime_profile(std::shared_ptr<compiled_unit> unit,
+                               virtual_machine &vm, std::string_view strings)
+{
+    const execution_profile saved = unit->runtime_profile;
+    unit->code = apply_profile_optimization(unit->code, strings, saved);
+    unit->handlers.clear();
+    unit->handler_at_pc.clear();
+    unit->handler_index.clear();
+    compile_handlers(*unit, vm, strings);
+    unit->profile_generation = saved.generation;
     return unit;
 }
 
@@ -546,15 +672,47 @@ inline std::shared_ptr<jit::compiled_unit>
 virtual_machine::get_jit_unit(std::span<const std::byte> source)
 {
     const jit_cache_key key{source.data(), source.size()};
+    jit::execution_profile &profile = jit::profile_registry::instance().get(source);
+
+    std::shared_ptr<jit::compiled_unit> stale_unit;
     {
         std::lock_guard<std::mutex> guard{jit_mutex_};
         const auto found = jit_cache_.find(key);
         if (found != jit_cache_.end())
         {
-            return found->second;
+            const std::shared_ptr<jit::compiled_unit> &cached = found->second;
+            const bool stale_runtime =
+                jit::pgo_enabled() && cached->runtime_profile.is_mature() &&
+                cached->profile_generation < cached->runtime_profile.generation;
+            if (stale_runtime)
+            {
+                stale_unit = cached;
+                jit_cache_.erase(found);
+            }
+            else if (!jit::pgo_enabled() ||
+                     cached->profile_generation >= profile.generation)
+            {
+                return cached;
+            }
+            else
+            {
+                jit_cache_.erase(found);
+            }
         }
     }
-    auto unit = jit::compile_unit(*this, source, image_.strings);
+
+    if (stale_unit)
+    {
+        auto refreshed =
+            jit::recompile_with_runtime_profile(stale_unit, *this, image_.strings);
+        std::lock_guard<std::mutex> guard{jit_mutex_};
+        jit_cache_[key] = refreshed;
+        return refreshed;
+    }
+
+    const jit::execution_profile *profile_ptr =
+        profile.is_mature() ? &profile : nullptr;
+    auto unit = jit::compile_unit(*this, source, image_.strings, profile_ptr);
     std::lock_guard<std::mutex> guard{jit_mutex_};
     jit_cache_[key] = unit;
     return unit;
@@ -567,42 +725,66 @@ inline value virtual_machine::execute_jit(frame &current)
     current.jit_return.reset();
 
     const std::shared_ptr<jit::compiled_unit> &unit = current.jit_unit;
+    vm_dispatch_scope dispatch{*this};
+    jit::pipeline_state pipeline{};
+    pipeline.reset(current.pc);
     while (current.pc < unit->code.size())
     {
         const size_t instruction_pc = current.pc;
         sync_call_stack_pc(instruction_pc);
-        try
+
+        size_t handler_index = jit::compiled_unit::invalid_handler;
+        if (current.jit_next_handler.has_value())
         {
-            const auto found = unit->handler_at_pc.find(current.pc);
-            if (found == unit->handler_at_pc.end())
+            handler_index = *current.jit_next_handler;
+            current.jit_next_handler.reset();
+        }
+        else
+        {
+            handler_index = jit::pipeline_fetch_handler(*unit, instruction_pc);
+        }
+
+        if (handler_index == jit::compiled_unit::invalid_handler)
+        {
+            throw_error("JIT missing handler at pc " +
+                        std::to_string(instruction_pc) + " in " +
+                        current.description);
+            if (runtime_fault_pending())
             {
-                throw_error("JIT missing handler at pc " +
-                            std::to_string(current.pc) + " in " +
-                            current.description);
-            }
-            unit->handlers[found->second](*this, current, instruction_pc);
-            if (current.jit_return.has_value())
-            {
-                return std::move(*current.jit_return);
+                if (dispatch_runtime_trap(current, instruction_pc))
+                {
+                    pipeline.reset(current.pc);
+                    continue;
+                }
+                return value{};
             }
         }
-        catch (const runtime_exception &error)
+
+        unit->handlers[handler_index](*this, current, instruction_pc);
+        if (current.jit_return.has_value())
         {
-            while (!current.monitors.empty() &&
-                   !current.monitors.back().covers(instruction_pc))
-            {
-                current.monitors.pop_back();
-            }
-            if (current.monitors.empty())
-            {
-                throw;
-            }
-            const monitor_state handler = current.monitors.back();
-            current.monitors.pop_back();
-            current.stack.resize(handler.stack_depth);
-            current.stack.push_back(error.payload());
-            current.pc = handler.handler_pc;
+            return std::move(*current.jit_return);
         }
+
+        if (runtime_fault_pending())
+        {
+            if (dispatch_runtime_trap(current, instruction_pc))
+            {
+                pipeline.reset(current.pc);
+                continue;
+            }
+            return value{};
+        }
+
+        if (current.pc < unit->handler_index.size())
+        {
+            const size_t next = unit->handler_index[current.pc];
+            if (next != jit::compiled_unit::invalid_handler)
+            {
+                current.jit_next_handler = next;
+            }
+        }
+        pipeline.reset(current.pc);
     }
     return current.jit_return.value_or(value{});
 }

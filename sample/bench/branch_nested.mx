@@ -1,0 +1,18 @@
+package branch_nested
+
+// Nested loops — inner back-edge + outer back-edge.
+outer_limit = 1000
+inner_limit = 1000
+sum = 0
+outer = 0
+loop outer < outer_limit {
+    inner = 0
+    loop inner < inner_limit {
+        sum = sum + outer + inner
+        inner = inner + 1
+    }
+    outer = outer + 1
+}
+
+print("sum=", sum)
+println("")

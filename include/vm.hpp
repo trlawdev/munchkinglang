@@ -4,7 +4,10 @@
 #include "Opcode.hpp"
 #include "bytecode_decoder.hpp"
 #include "jit/bytecode_utils.hpp"
+#include "jit/branch_predictor.hpp"
+#include "jit/execution_profile.hpp"
 #include "jit/jit_compiler.hpp"
+#include "regex_util.hpp"
 #include "simd_ops.hpp"
 #include "vm_pipe.hpp"
 #include "vm_value.hpp"
@@ -136,7 +139,7 @@ inline std::vector<debug_loc_entry> parse_debug_map(std::span<const std::byte> b
     {
         if (offset + 20 > blob.size())
         {
-            throw compilation_error{"truncated debug map in bytecode image"};
+            fail_compile("truncated debug map in bytecode image");
         }
         debug_loc_entry entry{};
         std::memcpy(&entry.pc, blob.data() + offset, sizeof entry.pc);
@@ -153,7 +156,7 @@ inline std::vector<debug_loc_entry> parse_debug_map(std::span<const std::byte> b
         offset += sizeof file_length;
         if (file_offset > strings.size() || file_length > strings.size() - file_offset)
         {
-            throw compilation_error{"invalid debug map file reference in bytecode image"};
+            fail_compile("invalid debug map file reference in bytecode image");
         }
         entry.file = std::string{strings.substr(file_offset, file_length)};
         entries.push_back(std::move(entry));
@@ -168,14 +171,14 @@ inline program_image load_program(const std::filesystem::path &path)
     std::ifstream input{path, std::ios::binary};
     if (!input)
     {
-        throw compilation_error{"could not open bytecode file: " + path.string()};
+        fail_compile("could not open bytecode file: " + path.string());
     }
     input.seekg(0, std::ios::end);
     const std::streamoff end = input.tellg();
     if (end < 0)
     {
-        throw compilation_error{"could not determine bytecode file size: " +
-                                path.string()};
+        fail_compile("could not determine bytecode file size: " +
+                                path.string());
     }
     input.seekg(0, std::ios::beg);
 
@@ -185,7 +188,7 @@ inline program_image load_program(const std::filesystem::path &path)
                static_cast<std::streamsize>(image.bytes.size()));
     if (!input && !image.bytes.empty())
     {
-        throw compilation_error{"failed to read bytecode file: " + path.string()};
+        fail_compile("failed to read bytecode file: " + path.string());
     }
 
     // Every offset, operand, and opcode is checked here, so the interpreter
@@ -287,7 +290,7 @@ public:
         return true;
     }
 
-    void set(const std::string &name, value item)
+    void set(const std::string &name, value &item)
     {
         std::lock_guard<std::mutex> guard{mutex_};
         values_[name] = std::move(item);
@@ -295,7 +298,7 @@ public:
 
     /// Assign only when @p name already exists.
     /// @return True when the assignment happened.
-    bool assign_existing(const std::string &name, const value &item)
+    bool assign_existing(const std::string &name, value &item)
     {
         std::lock_guard<std::mutex> guard{mutex_};
         const auto found = values_.find(name);
@@ -303,7 +306,7 @@ public:
         {
             return false;
         }
-        found->second = item;
+        found->second = std::move(item);
         return true;
     }
 };
@@ -338,6 +341,8 @@ struct frame
     bool global_scope{false};
     std::optional<value> jit_return;
     std::shared_ptr<jit::compiled_unit> jit_unit;
+    /// When set, `execute_jit` dispatches this handler index without a map lookup.
+    std::optional<size_t> jit_next_handler;
     std::span<const debug_loc_entry> debug_map{};
 };
 
@@ -406,6 +411,31 @@ class virtual_machine
 
     static constexpr size_t call_depth_limit = 512;
 
+    /// Deliver a pending runtime fault to a covering `trap` handler when possible.
+    static bool dispatch_runtime_trap(frame &current, size_t instruction_pc)
+    {
+        if (!runtime_fault_pending())
+        {
+            return false;
+        }
+        while (!current.monitors.empty() &&
+               !current.monitors.back().covers(instruction_pc))
+        {
+            current.monitors.pop_back();
+        }
+        if (current.monitors.empty())
+        {
+            return false;
+        }
+        const monitor_state handler = current.monitors.back();
+        current.monitors.pop_back();
+        current.stack.resize(handler.stack_depth);
+        current.stack.push_back(tls_runtime_fault.payload);
+        current.pc = handler.handler_pc;
+        tls_runtime_fault.clear();
+        return true;
+    }
+
 public:
     /// Bind @p image to a fresh runtime; @p arguments becomes `argv`.
     virtual_machine(program_image image, std::vector<std::string> arguments)
@@ -421,28 +451,23 @@ public:
     {
         call_stack_state stack;
         active_call_stack = &stack;
-        try
+        for (const package_def &package : image_.packages)
         {
-            for (const package_def &package : image_.packages)
+            frame initializer;
+            initializer.description = "package " + package.name;
+            initializer.code = package.init_code;
+            initializer.global_scope = true;
+            initializer.debug_map =
+                std::span<const debug_loc_entry>(package.init_debug_map);
+            push_call_stack(initializer);
+            execute(initializer);
+            pop_call_stack();
+            if (runtime_fault_pending())
             {
-                frame initializer;
-                initializer.description = "package " + package.name;
-                initializer.code = package.init_code;
-                initializer.global_scope = true;
-                initializer.debug_map =
-                    std::span<const debug_loc_entry>(package.init_debug_map);
-                push_call_stack(initializer);
-                execute(initializer);
-                pop_call_stack();
+                report_error(tls_runtime_fault.message, tls_runtime_fault.stack_trace);
+                tls_runtime_fault.clear();
+                break;
             }
-        }
-        catch (const runtime_exception &error)
-        {
-            report_error(error);
-        }
-        catch (const std::exception &error)
-        {
-            report_error(error.what(), {});
         }
         active_call_stack = nullptr;
         join_threads();
@@ -456,15 +481,24 @@ public:
     {
         if (const auto *function = callee.get_if<function_value>())
         {
-            return call_function(*function->def, arguments);
+            const value result = call_function(*function->def, arguments);
+            if (runtime_fault_pending())
+            {
+                return value{};
+            }
+            return result;
         }
         if (const auto *builtin = callee.get_if<builtin_ref>())
         {
-            return (*builtin)->invoke(*this, arguments);
+            const value result = (*builtin)->invoke(*this, arguments);
+            if (runtime_fault_pending())
+            {
+                return value{};
+            }
+            return result;
         }
         if (const auto *handle = callee.get_if<io_ref>())
         {
-            // `print = fix(open(io_type::tty, out))` makes a handle callable.
             std::string text;
             for (const value &argument : arguments)
             {
@@ -474,17 +508,13 @@ public:
         }
         throw_error(std::string{"value of type "} + type_name(callee) +
                     " is not callable");
+        return value{};
     }
 
     /// Print @p message as a runtime diagnostic and mark the run as failed.
     void report_error(std::string_view message)
     {
         report_error(message, {});
-    }
-
-    void report_error(const runtime_exception &error)
-    {
-        report_error(error.what(), error.stack_trace());
     }
 
     void report_error(std::string_view message,
@@ -521,23 +551,18 @@ public:
     }
 
     /// Start @p callee on a new munx thread with @p arguments.
-    value spawn_thread(value callee, value_vector arguments)
+    value spawn_thread(value &callee, value_vector &arguments)
     {
         auto handle = std::make_shared<thread_object>();
-        handle->worker = std::thread([this, callee, arguments]() mutable {
+        handle->worker = std::thread([this, callee = std::move(callee),
+                                      arguments = std::move(arguments)]() mutable {
             call_stack_state stack;
             active_call_stack = &stack;
-            try
+            call_value(callee, arguments);
+            if (runtime_fault_pending())
             {
-                call_value(callee, arguments);
-            }
-            catch (const runtime_exception &error)
-            {
-                report_error(error);
-            }
-            catch (const std::exception &error)
-            {
-                report_error(error.what(), {});
+                report_error(tls_runtime_fault.message, tls_runtime_fault.stack_trace);
+                tls_runtime_fault.clear();
             }
             active_call_stack = nullptr;
         });
@@ -654,6 +679,7 @@ public:
         if (found == functions_.end())
         {
             throw_error("unknown function `" + name + "`");
+            return value{};
         }
         return value{function_value{found->second}};
     }
@@ -663,9 +689,9 @@ public:
         return load_name(current, name);
     }
 
-    void jit_store_name(frame &current, const std::string &name, value item)
+    void jit_store_name(frame &current, const std::string &name, value &item)
     {
-        store_name(current, name, std::move(item));
+        store_name(current, name, item);
     }
 
     [[nodiscard]] size_t jit_jump_target(const frame &current,
@@ -700,7 +726,7 @@ public:
         }
     }
 
-    void jit_pipe_insert(frame &current, const std::string &name, const value &item)
+    void jit_pipe_insert(frame &current, const std::string &name, value &item)
     {
         expect_pipe(load_name(current, name), name)->insert(item);
     }
@@ -714,7 +740,8 @@ public:
     {
         auto guard = std::make_shared<lock_object>();
         guard->name = name;
-        store_name(current, name, value{guard});
+        value guard_value{guard};
+        store_name(current, name, guard_value);
     }
 
     void jit_lock_acquire(frame &current, const std::string &name)
@@ -729,7 +756,10 @@ public:
 
     static value jit_pop(frame &current) { return pop(current); }
 
-    static value jit_clone_for_return(value item) { return clone_for_return(std::move(item)); }
+    static value jit_clone_for_return(const value &item)
+    {
+        return clone_for_return(item);
+    }
 
     static void jit_dup(frame &current)
     {
@@ -813,7 +843,8 @@ private:
             for (const function_def *function : package.functions)
             {
                 functions_[function->name] = function;
-                globals_.set(function->name, value{function_value{function}});
+                value entry{function_value{function}};
+                globals_.set(function->name, entry);
             }
         }
     }
@@ -824,7 +855,8 @@ private:
         auto builtin = std::make_shared<builtin_object>();
         builtin->name = name;
         builtin->invoke = std::move(body);
-        globals_.set(name, value{builtin});
+        value entry{builtin};
+        globals_.set(name, entry);
     }
 
     static void expect_arity(const value_vector &arguments, size_t least,
@@ -837,6 +869,7 @@ private:
                                        : std::to_string(least) + " to " +
                                              std::to_string(most)) +
                         " argument(s), got " + std::to_string(arguments.size()));
+            return;
         }
     }
 
@@ -848,6 +881,8 @@ private:
         }
         throw_error(std::string{name} + " expects a string, got " +
                     type_name(item));
+        static const std::string k_empty;
+        return k_empty;
     }
 
     static const io_ref &expect_handle(const value &item, const char *name)
@@ -858,21 +893,28 @@ private:
         }
         throw_error(std::string{name} + " expects an io handle, got " +
                     type_name(item));
+        static io_ref k_empty = std::make_shared<io_object>();
+        return k_empty;
     }
 
-    void install_prelude(std::vector<std::string> arguments)
+    void install_prelude(const std::vector<std::string> &arguments)
     {
-        globals_.set("in", value{mode_value{"in"}});
-        globals_.set("out", value{mode_value{"out"}});
-        globals_.set("subscribe", value{mode_value{"subscribe"}});
-        globals_.set("null", value{});
+        value mode_in{mode_value{"in"}};
+        value mode_out{mode_value{"out"}};
+        value mode_subscribe{mode_value{"subscribe"}};
+        value null_value{};
+        globals_.set("in", mode_in);
+        globals_.set("out", mode_out);
+        globals_.set("subscribe", mode_subscribe);
+        globals_.set("null", null_value);
 
         auto argv = std::make_shared<sequence_object>();
-        for (std::string &argument : arguments)
+        for (const std::string &argument : arguments)
         {
-            argv->items.push_back(value{std::move(argument)});
+            argv->items.push_back(value{argument});
         }
-        globals_.set("argv", value{array_value{argv}});
+        value argv_value{array_value{argv}};
+        globals_.set("argv", argv_value);
 
         auto process = std::make_shared<namespace_object>();
         process->name = "process";
@@ -884,7 +926,8 @@ private:
             };
             process->members.emplace("id", value{id});
         }
-        globals_.set("process", value{process});
+        value process_value{process};
+        globals_.set("process", process_value);
 
         install_console_builtins();
         install_string_builtins();
@@ -923,7 +966,8 @@ private:
             {
                 message += to_display_string(argument);
             }
-            throw runtime_exception{message.empty() ? "failed" : message};
+            throw_error(message.empty() ? "failed" : message);
+            return value{};
         });
         define_builtin("fix", [](virtual_machine &, value_vector &arguments) {
             expect_arity(arguments, 1, 1, "fix");
@@ -986,14 +1030,14 @@ private:
             const std::string &text =
                 expect_string(arguments.front(), "has_substring_regex");
             const std::string pattern = to_display_string(arguments[1]);
-            try
+            munx::error regex_error;
+            const bool matched =
+                munx::regex_search_noexcept(text, pattern, &regex_error);
+            if (!regex_error.ok())
             {
-                return value{std::regex_search(text, std::regex{pattern})};
+                throw_error(regex_error.message);
             }
-            catch (const std::regex_error &error)
-            {
-                throw_error(std::string{"invalid regex: "} + error.what());
-            }
+            return value{matched};
         });
         define_builtin("len", [](virtual_machine &, value_vector &arguments) {
             expect_arity(arguments, 1, 1, "len");
@@ -1120,6 +1164,7 @@ private:
                 return open_socket(arguments);
             }
             throw_error("unsupported io_type::" + kind->member);
+            return value{};
         });
         define_builtin("close", [](virtual_machine &, value_vector &arguments) {
             expect_arity(arguments, 1, 1, "close");
@@ -1219,7 +1264,8 @@ private:
                     captured.push_back(arguments[1]);
                 }
             }
-            return machine.spawn_thread(arguments.front(), std::move(captured));
+            value callee = arguments.front();
+            return machine.spawn_thread(callee, captured);
         });
         define_builtin("join", [](virtual_machine &, value_vector &arguments) {
             for (const value &argument : arguments)
@@ -1643,6 +1689,7 @@ private:
             return static_cast<int64_t>((*object)->fields.size());
         }
         throw_error(std::string{"cannot take the length of "} + type_name(item));
+        return 0;
     }
 
     /// @return The mutable backing store of an array or tuple value.
@@ -1658,6 +1705,8 @@ private:
         }
         throw_error(std::string{name} + " expects an array, got " +
                     type_name(item));
+        static sequence_ref k_empty = std::make_shared<sequence_object>();
+        return k_empty;
     }
 
     static const value_vector &elements_of(const value &item)
@@ -1676,6 +1725,8 @@ private:
         }
         throw_error(std::string{"expected an array or tuple, got "} +
                     type_name(item));
+        static const value_vector k_empty;
+        return k_empty;
     }
 
     static value index_value(const value &container, const value &index)
@@ -1741,6 +1792,7 @@ private:
         }
         throw_error(std::string{"cannot read member `"} + member + "` of " +
                     type_name(container));
+        return value{};
     }
 
     static value cast_value(const value &item, const type_spec &target)
@@ -1758,6 +1810,7 @@ private:
             }
             throw_error("cannot cast " + std::string{type_name(item)} + " to " +
                         target.name);
+            return value{};
         }
         case ast::type_kind::Array:
         {
@@ -1778,6 +1831,7 @@ private:
                             "-element value to a " +
                             std::to_string(target.elements.size()) +
                             "-element tuple");
+                return value{};
             }
             auto converted = std::make_shared<sequence_object>();
             for (size_t index = 0; index < items.size(); ++index)
@@ -1787,8 +1841,12 @@ private:
             }
             return value{tuple_value{converted}};
         }
+        case ast::type_kind::Map:
+        case ast::type_kind::Lambda:
+            break;
         }
         throw_error("unsupported cast target");
+        return value{};
     }
 
     static value cast_primitive(const value &item, ast::primitive_kind target)
@@ -1877,20 +1935,19 @@ private:
         }
         throw_error(std::string{"cannot cast "} + type_name(item) +
                     " to the requested primitive type");
+        return value{};
     }
 
     static int64_t parse_integer(const std::string &text)
     {
-        size_t consumed = 0;
-        long long parsed = 0;
-        try
-        {
-            parsed = std::stoll(text, &consumed);
-        }
-        catch (const std::exception &)
+        char *end = nullptr;
+        errno = 0;
+        const long long parsed = std::strtoll(text.c_str(), &end, 10);
+        if (errno != 0 || end == text.c_str())
         {
             throw_error("cannot cast \"" + text + "\" to int");
         }
+        size_t consumed = static_cast<size_t>(end - text.c_str());
         while (consumed < text.size() &&
                std::isspace(static_cast<unsigned char>(text[consumed])) != 0)
         {
@@ -1905,16 +1962,14 @@ private:
 
     static double parse_number(const std::string &text)
     {
-        size_t consumed = 0;
-        double parsed = 0.0;
-        try
-        {
-            parsed = std::stod(text, &consumed);
-        }
-        catch (const std::exception &)
+        char *end = nullptr;
+        errno = 0;
+        const double parsed = std::strtod(text.c_str(), &end);
+        if (errno != 0 || end == text.c_str())
         {
             throw_error("cannot cast \"" + text + "\" to float");
         }
+        size_t consumed = static_cast<size_t>(end - text.c_str());
         while (consumed < text.size() &&
                std::isspace(static_cast<unsigned char>(text[consumed])) != 0)
         {
@@ -2038,6 +2093,7 @@ private:
             break;
         }
         throw_error("unsupported arithmetic opcode");
+        return value{};
     }
 
     static value compare(Opcode opcode, const value &left, const value &right)
@@ -2059,6 +2115,7 @@ private:
         {
             throw_error(std::string{"cannot order "} + type_name(left) +
                         " against " + type_name(right));
+            return value{};
         }
         switch (opcode)
         {
@@ -2074,6 +2131,7 @@ private:
             break;
         }
         throw_error("unsupported comparison opcode");
+        return value{};
     }
 
     static value bitwise(Opcode opcode, const value &left, const value &right)
@@ -2097,6 +2155,7 @@ private:
             break;
         }
         throw_error("unsupported bitwise opcode");
+        return value{};
     }
 
     // -- frame helpers ------------------------------------------------------
@@ -2106,6 +2165,7 @@ private:
         if (current.stack.empty())
         {
             throw_error("operand stack underflow in " + current.description);
+            return value{};
         }
         value item = std::move(current.stack.back());
         current.stack.pop_back();
@@ -2206,14 +2266,15 @@ private:
             return item;
         }
         throw_error("undefined name `" + name + "`");
+        return value{};
     }
 
     /// Assign @p name, preferring an existing local, then an existing global.
-    void store_name(frame &current, const std::string &name, value item)
+    void store_name(frame &current, const std::string &name, value &item)
     {
         if (current.global_scope)
         {
-            globals_.set(name, std::move(item));
+            globals_.set(name, item);
             return;
         }
         const auto found = current.locals.find(name);
@@ -2238,6 +2299,7 @@ private:
             throw_error(definition.name + " expects " +
                         std::to_string(definition.parameters.size()) +
                         " argument(s), got " + std::to_string(arguments.size()));
+            return value{};
         }
 
         frame invocation;
@@ -2258,26 +2320,18 @@ private:
         {
             --depth;
             throw_error("call stack overflow in " + definition.name);
+            return value{};
         }
         push_call_stack(invocation);
-        try
-        {
-            value result = execute(invocation);
-            pop_call_stack();
-            --depth;
-            return result;
-        }
-        catch (...)
-        {
-            pop_call_stack();
-            --depth;
-            throw;
-        }
+        const value result = execute(invocation);
+        pop_call_stack();
+        --depth;
+        return result;
     }
 
     /// Register a constructor for a `DEFINE_OBJECT` declaration.
     void define_object_type(frame &current, const std::string &name,
-                            std::vector<std::string> fields)
+                            const std::vector<std::string> &fields)
     {
         auto constructor = std::make_shared<builtin_object>();
         constructor->name = name;
@@ -2295,7 +2349,8 @@ private:
             instance->fields = arguments;
             return value{instance};
         };
-        store_name(current, name, value{constructor});
+        value constructor_value{constructor};
+        store_name(current, name, constructor_value);
     }
 
     static type_spec from_decoded_type(const jit::decoded_type &source)
@@ -2322,18 +2377,39 @@ private:
     /// @return The returned value, or null for an initializer.
     value execute(frame &current)
     {
+        jit::execution_profile &profile =
+            jit::profile_registry::instance().get(current.code);
+
         if (jit::jit_enabled())
         {
+            const unsigned warmup = jit::jit_warmup_invocations();
+            if (warmup > 0 && profile.interpret_runs < warmup)
+            {
+                profile.note_interpret_run();
+                const value result = execute_interpret(current, profile);
+                jit::branch_predictor::instance().seed_from_profile(profile);
+                if (profile.interpret_runs < warmup)
+                {
+                    return result;
+                }
+            }
             return execute_jit(current);
         }
 
+        return execute_interpret(current, profile);
+    }
+
+    value execute_interpret(frame &current, jit::execution_profile &profile)
+    {
+        vm_dispatch_scope dispatch{*this};
+        jit::branch_predictor &predictor = jit::branch_predictor::instance();
         while (current.pc < current.code.size())
         {
             const size_t instruction_pc = current.pc;
             sync_call_stack_pc(instruction_pc);
-            try
-            {
-                const auto opcode = static_cast<Opcode>(read_u8(current));
+            profile.record_block(instruction_pc);
+
+            const auto opcode = static_cast<Opcode>(read_u8(current));
                 switch (opcode)
                 {
                 case Opcode::PUSH_INT:
@@ -2408,7 +2484,8 @@ private:
                 case Opcode::STORE:
                 {
                     const std::string name = read_name(current);
-                    store_name(current, name, pop(current));
+                    value item = pop(current);
+                    store_name(current, name, item);
                     break;
                 }
                 case Opcode::ADD:
@@ -2485,18 +2562,36 @@ private:
                 case Opcode::JMP_IF_FALSE:
                 {
                     const auto target = read_scalar<uint32_t>(current);
-                    if (!is_truthy(pop(current)))
+                    const size_t branch_pc = instruction_pc;
+                    const size_t fallthrough_pc = current.pc;
+                    const size_t jump_pc = jump_target(current, target);
+                    const bool predicted =
+                        predictor.predict(branch_pc, jump_pc, fallthrough_pc);
+                    (void)predicted;
+                    const bool actually_taken = !is_truthy(pop(current));
+                    predictor.train(branch_pc, actually_taken, jump_pc);
+                    profile.record_branch(branch_pc, actually_taken);
+                    if (actually_taken)
                     {
-                        current.pc = jump_target(current, target);
+                        current.pc = jump_pc;
                     }
                     break;
                 }
                 case Opcode::JMP_IF_TRUE:
                 {
                     const auto target = read_scalar<uint32_t>(current);
-                    if (is_truthy(pop(current)))
+                    const size_t branch_pc = instruction_pc;
+                    const size_t fallthrough_pc = current.pc;
+                    const size_t jump_pc = jump_target(current, target);
+                    const bool predicted =
+                        predictor.predict(branch_pc, jump_pc, fallthrough_pc);
+                    (void)predicted;
+                    const bool actually_taken = is_truthy(pop(current));
+                    predictor.train(branch_pc, actually_taken, jump_pc);
+                    profile.record_branch(branch_pc, actually_taken);
+                    if (actually_taken)
                     {
-                        current.pc = jump_target(current, target);
+                        current.pc = jump_pc;
                     }
                     break;
                 }
@@ -2542,8 +2637,8 @@ private:
                     auto map = std::make_shared<map_object>();
                     for (size_t index = count; index > 0; --index)
                     {
-                        const value item = pop(current);
-                        const value key = pop(current);
+                        value item = pop(current);
+                        value key = pop(current);
                         map_store_entry(*map, key, item);
                     }
                     current.stack.push_back(value{map_value{std::move(map)}});
@@ -2645,7 +2740,7 @@ private:
                 case Opcode::PIPE_INSERT:
                 {
                     const std::string name = read_name(current);
-                    const value item = pop(current);
+                    value item = pop(current);
                     expect_pipe(load_name(current, name), name)->insert(item);
                     current.stack.push_back(value{});
                     break;
@@ -2688,7 +2783,8 @@ private:
                     const std::string name = read_name(current);
                     auto guard = std::make_shared<lock_object>();
                     guard->name = name;
-                    store_name(current, name, value{guard});
+                    value guard_value{guard};
+                    store_name(current, name, guard_value);
                     break;
                 }
                 case Opcode::LOCK_ACQUIRE:
@@ -2718,26 +2814,14 @@ private:
                     }
                     break;
                 }
-            }
-            catch (const runtime_exception &error)
+
+            if (runtime_fault_pending())
             {
-                // Unwind into the innermost `trap` handler still covering the
-                // faulting instruction: restore the operand depth recorded at
-                // `monitor` entry and deliver the error.
-                while (!current.monitors.empty() &&
-                       !current.monitors.back().covers(instruction_pc))
+                if (dispatch_runtime_trap(current, instruction_pc))
                 {
-                    current.monitors.pop_back();
+                    continue;
                 }
-                if (current.monitors.empty())
-                {
-                    throw;
-                }
-                const monitor_state handler = current.monitors.back();
-                current.monitors.pop_back();
-                current.stack.resize(handler.stack_depth);
-                current.stack.push_back(error.payload());
-                current.pc = handler.handler_pc;
+                return value{};
             }
         }
         return value{};
@@ -2761,6 +2845,8 @@ private:
         }
         throw_error("`" + name + "` is not a pipe (it is " +
                     type_name(item) + ")");
+        static const pipe_ref k_empty{};
+        return k_empty;
     }
 
     static lock_ref expect_lock(const value &item, const std::string &name)
@@ -2771,6 +2857,8 @@ private:
         }
         throw_error("`" + name + "` is not a lock (it is " +
                     type_name(item) + ")");
+        static const lock_ref k_empty{};
+        return k_empty;
     }
 };
 
@@ -2785,7 +2873,7 @@ namespace munx::vm
 /// @param arguments Values exposed to the program as `argv`.
 /// @return Process exit status.
 inline int run_bytecode_file(const std::filesystem::path &path,
-                             std::vector<std::string> arguments)
+                             const std::vector<std::string> &arguments)
 {
 #if MUNX_VM_HAS_SOCKETS
     munx::winsock_session winsock;
@@ -2798,7 +2886,7 @@ inline int run_bytecode_file(const std::filesystem::path &path,
 #if MUNX_VM_HAS_NAMED_PIPES
     pipe_hub::client::session hub_session;
 #endif
-    virtual_machine machine{load_program(path), std::move(arguments)};
+    virtual_machine machine{load_program(path), arguments};
     return machine.run();
 }
 

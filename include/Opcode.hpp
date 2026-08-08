@@ -93,9 +93,11 @@ enum class Opcode : uint8_t
 
     MAKE_MAP,     ///< u32 n — pop n key/value pairs (value keys, value on top), push map.
 
-    // ---- pipes --------------------------------------------------------------------
-    PIPE_INSERT,  ///< str pipe name — pop value, write it into the pipe, push null.
-    PIPE_EXTRACT, ///< str pipe name — blocking read, push the extracted value.
+    // ---- pipes / channels ---------------------------------------------------------
+    PIPE_INSERT,     ///< str pipe name — pop value, write it into the pipe, push null.
+    PIPE_EXTRACT,    ///< str pipe name — blocking read, push the extracted value.
+    CHANNEL_INSERT,  ///< str channel var — pop value, channel-send (`:=>`), push null.
+    CHANNEL_EXTRACT, ///< str channel var — blocking channel-recv (`<=:`), push value.
 
     // ---- runtime type metadata (emitted for enum / object declarations) -------------
     DEFINE_ENUM,   ///< str name, u32 n, then n × str member names.

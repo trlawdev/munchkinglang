@@ -30,12 +30,43 @@ BUILD_TYPE=sanitize ./compile.sh
 ./munxc --run sample/logscope/main.mx access.log     # compile, then execute (JIT default)
 ./munxc --run --interp sample/logscope/main.mx access.log  # force interpreter
 MUNX_VM_JIT=0 ./munxc --run sample/logscope/main.mxb access.log
+./munxc --native -o hello tests/programs/hello.mx    # host native executable (subset)
 ./munxc --decompile sample/logscope/main.mxb         # reconstruct pseudo-Munx
 ./munxc --decode sample/logscope/main.mxb            # low-level disassembly
 ./munxc --ast sample/logscope/main.mx                # print AST
 ./munxc --tokens sample/logscope/main.mx             # print tokens
 ./munxc --files sample/io.mx sample/process_.mx      # compile several files
 ```
+
+### Native executables (`--native`)
+
+`munxc --native` lowers a supported language subset through a shared MIR, runs a
+small MIR optimizer, then emits C and links the C11 runtime in `native/runtime/`
+with the host `clang`/`cc` (custom backend). Output is a normal host binary.
+
+```bash
+MUNX_NATIVE_BACKEND=custom ./build.sh   # default
+./munxc --native -o app tests/programs/loops.mx
+./app
+```
+
+Build-time switch `MUNX_NATIVE_BACKEND` (`custom` | `llvm` | `both`) selects which
+backends are compiled into `munxc`. When `both`, pass `--backend custom|llvm` at
+invoke time.
+
+- **custom:** MIR → C → host `cc`/`clang`
+- **llvm:** MIR → LLVM IR → `clang -O2` (LLVM opts/codegen) + same C11 runtime
+
+```bash
+MUNX_NATIVE_BACKEND=both ./build.sh
+./munxc --native --backend llvm -o app tests/programs/hello.mx
+```
+
+`clang` must be on `PATH` when using `--backend llvm` (override with `CLANG=`).
+
+**v1 subset:** arithmetic, comparisons, `if`/`else`, `loop`, functions,
+strings, `print`/`println`, `argv.len` / `argv[i]`. Unsupported features fail
+native compile with a `native: … is not supported yet` diagnostic.
 
 **macOS notes**
 
@@ -155,18 +186,44 @@ and writes its arguments).
 | Strings | `concat`, `trim`, `split`, `has_substring_regex`, `len` |
 | Collections | `queue`, `append`, `push`, `pop`, `remove_at` |
 | I/O | `open`, `read`, `write`, `close`, `bind`, `listen`, `accept` |
-| Concurrency | `thread`, `join`, `pipe`, `sleep` |
+| Concurrency | `thread`, `join`, `pipe`, `channel`, `sleep` |
+| Reflection | `::reflexpr`, `::members`, `::reflect_for`, `::match`/`typeid` (compile-time) |
+| Generics | `func f<T>(…)`, call-site inference or `f<Type>(…)` |
 | Environment | `argv`, `process.id()`, `in`, `out`, `subscribe` |
 
 `pipe(name, in|out|subscribe)` opens a named pipe through the munx pipe hub
-(default directory: `$MUNX_PIPE_DIR` or `<tmpdir>/munx-pipes/`). The hub starts
-automatically on the first VM that uses pipes and exits when the last VM
-disconnects. `pipe(name, in)` is a competing-consumer queue; `pipe(name,
+(default directory: `$MUNX_PIPE_DIR` or `<tmpdir>/munx-pipes/`). On Linux/macOS
+the hub uses an `AF_UNIX` stream socket (`SOCK_STREAM` at `hub.sock`).
+The hub starts automatically on the first client that uses pipes and exits when
+the last client disconnects. `pipe(name, in)` is a competing-consumer queue; `pipe(name,
 subscribe)` delivers a copy of every message to each subscriber; `pipe(name,
 out)` publishes. Values are serialized so separate VM processes can exchange
 data. Set `$MUNX_PIPE_HUB=0` to use direct POSIX FIFOs on Linux/macOS (not supported on Windows).
 
-See `sample/pipehub/` for a multi-process pub/sub demo.
+`channel(id)` opens a bidirectional link for exactly two peers (VM, JIT, and
+native AOT). `:=>` offers then sends after the hub grants Accept; `<=:` announces
+ready and blocks for a payload. Simultaneous offers collide (`Busy`) and both
+peers back off 1–10 ms before retrying.
+
+See `sample/pipehub/` for a minimal pub/sub demo, `sample/marketfeed/` for a
+real-world exchange tick feed (tape + risk subscribers),
+`sample/channels/` for peer channels, `sample/reflexpr_.mx` for
+compile-time reflection over object fields (`::reflexpr` / `::members` /
+`::reflect_for`, with generic `func f<T>` and call-site type inference),
+`sample/json_decode.mx` for JSON → object decoding in Munx via
+`::reflexpr` / `::reflect_for` / `::construct` (with `parse_json` helpers),
+`sample/record_decode.mx` for `key=value` records, and `sample/csv_decode.mx`
+for CSV rows in field declaration order.
+
+Throughput (interp / JIT / native AOT):
+
+```bash
+./tools/bench_pubsub.sh
+COUNT=10000 RUNS=3 ./tools/bench_pubsub.sh
+```
+
+A separate [Munx language server](../munx-language-server/) provides LSP
+completions, hover, symbols, and light diagnostics for `.mx` files.
 
 `open` selects the handle type from its `io_type` enum member:
 `io_type::tty` with `in` / `out` yields a `term`, `io_type::file` with a path
@@ -181,10 +238,11 @@ members yields a `socket`.
 - **Scope** — functions read and write package globals directly; a name that is
   new inside a function stays local to that call.
 - **Concurrency** — `thread` maps to an OS thread over shared globals. Pipes
-  route through a singleton pipe hub across VM processes (`pipe(name, in)` for
-  work queues, `pipe(name, subscribe)` for pub/sub, `pipe(name, out)` for
-  writers). Values are serialized (`null` is the conventional sentinel). Locks
-  are non-reentrant and releasable by any thread.
+  and channels route through a singleton pipe hub across VM processes
+  (`pipe(name, in)` for work queues, `pipe(name, subscribe)` for pub/sub,
+  `pipe(name, out)` for writers, `channel(id)` / `:=>` / `<=:` for two-peer
+  rendezvous). Values are serialized (`null` is the conventional sentinel).
+  Locks are non-reentrant and releasable by any thread.
 - **Errors** — `fail(...)`, bad casts, bad indexes, division by zero, and I/O
   failures raise trappable errors that unwind to the nearest `monitor` / `trap`
   in the current frame, then to the caller.

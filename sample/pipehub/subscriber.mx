@@ -2,9 +2,8 @@ package pipehub_subscriber
 
 // Broadcast subscriber for the pipehub demo.
 //
+// Start the publisher first (it must hold `pipe(name, out)` open), then:
 //   ./munxc --run sample/pipehub/subscriber.mx
-//
-// Run two terminals with this command, then publish from publisher.mx.
 
 print = fix(open(io_type::tty, out))
 println = fix(open(io_type::tty, out))

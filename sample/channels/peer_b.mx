@@ -1,0 +1,19 @@
+package channels_peer_b
+
+// Bidirectional channel peer B.
+// Start peer_a first, then:
+//   ./munxc --run sample/channels/peer_b.mx "hello from B"
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+if argv.len < 1 {
+    fail("usage: peer_b <message>")
+}
+
+ch = channel("demo.channel")
+message = argv[0]
+message :=> ch
+println(concat("peer B sent: ", message))
+reply = <=: ch
+println(concat("peer B received: ", cast[string](reply)))

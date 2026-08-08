@@ -1,0 +1,88 @@
+package record_decode
+
+// String → object decode in Munx via reflection.
+// Input is a line-oriented `key=value` record (nested objects are nested
+// records). Parsing the text into a map is ordinary Munx; field binding uses
+// `::reflexpr` / `::members` / `::reflect_for` / `::match` / `::construct`.
+
+object Detail {
+    some_info: string
+}
+
+
+object Person {
+    name: string,
+    age: int,
+    height: float,
+    active: bool,
+    detail: Detail
+}
+
+// Split `key=value\n...` text into a string map (non-generic helper).
+func parse_record(s: string): map[string => string] {
+    m = map[string => string]{}
+    lines = split(s, "\n")
+    i = 0
+    loop i < lines.len {
+        line = trim(lines[i])
+        if line != "" {
+            parts = split(line, "=")
+            if parts.len < 2 {
+                fail(concat("expected key=value, got: ", line))
+            }
+            key = trim(parts[0])
+            // Re-join remaining segments so values may contain '='.
+            val = trim(parts[1])
+            j = 2
+            loop j < parts.len {
+                val = concat(val, "=", parts[j])
+                j = j + 1
+            }
+            m insert(m, {key: val})
+        }
+        i = i + 1
+    }
+    return m
+}
+
+func require_field(m: map[string => string], name: string): string {
+    v = get(m, name)
+    if v == null {
+        fail(concat("missing required field `", name, "`"))
+    }
+    return v
+}
+
+func from_record<T>(data: map[string => string]): T {
+    art = ::reflexpr(T)
+    members = ::members(art)
+    args = queue()
+    ::reflect_for(member of members) {
+        raw = require_field(data, member.name)
+        ::match member.type {
+            ::case typeid(string) => append(args, raw)
+            ::case typeid(int) => append(args, cast[int](raw))
+            ::case typeid(float) => append(args, cast[float](raw))
+            ::case typeid(bool) => append(args, cast[bool](raw))
+            ::case typeid(object) => append(args, from_record(parse_record(raw)))
+            ::default => fail("unsupported record field type")
+        }
+    }
+    return ::construct(T, args)
+}
+
+func decode_record<T>(s: string): T {
+    return from_record<T>(parse_record(s))
+}
+
+text = "name=Ada\nage=36\nheight=1.68\nactive=true\ndetail=some_info=ok"
+p = decode_record<Person>(text)
+println("name=", p.name, " age=", p.age, " height=", p.height, " active=", p.active)
+println("detail=", p.detail.some_info)
+
+monitor {
+    bad = decode_record<Person>("name=bad\nage=nope\nheight=1\nactive=false\ndetail=some_info=x")
+    println("should not reach ", bad.name)
+} trap(err: exception) {
+    println("caught: ", err.message)
+}

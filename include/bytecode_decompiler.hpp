@@ -560,6 +560,17 @@ private:
                 stack.push_back("<- " +
                     identifier(string_at(input.string_operand())));
                 break;
+            case Opcode::CHANNEL_INSERT:
+            {
+                const std::string value = pop(stack);
+                stack.push_back(value + " :=> " +
+                    identifier(string_at(input.string_operand())));
+                break;
+            }
+            case Opcode::CHANNEL_EXTRACT:
+                stack.push_back("<=: " +
+                    identifier(string_at(input.string_operand())));
+                break;
             case Opcode::DEFINE_ENUM:
             {
                 const std::string name =

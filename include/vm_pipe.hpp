@@ -374,7 +374,8 @@ inline value deserialize_value(std::span<const std::byte> payload)
 
 } // namespace detail
 
-/// Native named pipe endpoint used for inter-process `pipe(...)`, `->`, and `<-`.
+/// Native named pipe / channel endpoint for `pipe(...)`, `channel(...)`,
+/// `->` / `<-`, and `:=>` / `<=:`.
 struct pipe_object
 {
     std::string id;
@@ -651,6 +652,71 @@ struct pipe_object
         return detail::deserialize_value(payload);
 #else
         throw_error("named pipes are not supported on this platform");
+#endif
+    }
+
+    /// Open a bidirectional channel peer (`channel("id")`). Hub required.
+    static pipe_ref open_channel(const std::string &channel_id)
+    {
+#if MUNX_VM_HAS_NAMED_PIPES
+        if (!pipe_hub::hub_enabled())
+        {
+            throw_error("channel() requires the pipe hub (unset MUNX_PIPE_HUB=0)");
+        }
+        auto handle = std::make_shared<pipe_object>();
+        handle->id = channel_id;
+        handle->readable = true;
+        handle->writable = true;
+        handle->use_hub = true;
+        handle->hub_mode = pipe_hub::attachment_mode::ChannelPeer;
+        pipe_hub::client::instance().attach(handle->id, handle->hub_mode);
+        return handle;
+#else
+        (void)channel_id;
+        throw_error("channels are not supported on this platform");
+#endif
+    }
+
+    bool is_channel() const
+    {
+        return use_hub && hub_mode == pipe_hub::attachment_mode::ChannelPeer;
+    }
+
+    /// Channel send (`value :=> name`) with offer/accept + collision backoff.
+    void channel_insert(value &item)
+    {
+#if MUNX_VM_HAS_NAMED_PIPES
+        if (!is_channel())
+        {
+            throw_error("`:=>` requires a channel handle");
+        }
+        const std::vector<std::byte> payload = detail::serialize_value(item);
+        std::lock_guard<std::mutex> guard{write_mutex};
+        pipe_hub::client::instance().channel_send(id, payload);
+#else
+        (void)item;
+        throw_error("channels are not supported on this platform");
+#endif
+    }
+
+    /// Channel extract (`<=: name`) — wait for peer payload.
+    value channel_extract()
+    {
+#if MUNX_VM_HAS_NAMED_PIPES
+        if (!is_channel())
+        {
+            throw_error("`<=:` requires a channel handle");
+        }
+        std::lock_guard<std::mutex> guard{read_mutex};
+        const std::vector<std::byte> payload =
+            pipe_hub::client::instance().channel_recv(id);
+        if (payload.empty())
+        {
+            return value{};
+        }
+        return detail::deserialize_value(payload);
+#else
+        throw_error("channels are not supported on this platform");
 #endif
     }
 

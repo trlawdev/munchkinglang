@@ -1,0 +1,16 @@
+package channels_peer_a
+
+// Bidirectional channel peer A.
+// Start this first, then peer_b in another terminal:
+//   ./munxc --run sample/channels/peer_a.mx
+//   ./munxc --run sample/channels/peer_b.mx "hello from B"
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+ch = channel("demo.channel")
+println("peer A waiting for a message...")
+value = <=: ch
+println(concat("peer A received: ", cast[string](value)))
+"ack from A" :=> ch
+println("peer A sent acknowledgement")

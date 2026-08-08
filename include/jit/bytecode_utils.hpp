@@ -161,6 +161,8 @@ struct bytecode_cursor
         case Opcode::FREE:
         case Opcode::PIPE_INSERT:
         case Opcode::PIPE_EXTRACT:
+        case Opcode::CHANNEL_INSERT:
+        case Opcode::CHANNEL_EXTRACT:
         case Opcode::LOCK_CREATE:
         case Opcode::LOCK_ACQUIRE:
         case Opcode::LOCK_RELEASE:

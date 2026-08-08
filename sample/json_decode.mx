@@ -1,0 +1,53 @@
+package json_decode
+
+// JSON → object decode written in Munx with compile-time reflection.
+// `parse_json` / `json_field` / `json_require` are runtime helpers; field
+// walk + construction use `::reflexpr`, `::members`, `::reflect_for`,
+// `::match`, and `::construct`.
+
+object Detail {
+    some_info: string
+}
+
+object Person {
+    name: string,
+    age: int,
+    height: float,
+    active: bool,
+    detail: Detail
+}
+
+func from_json<T>(data: Json): T {
+    root = json_require(data, "object")
+    art = ::reflexpr(T)
+    members = ::members(art)
+    args = queue()
+    ::reflect_for(member of members) {
+        value = json_field(root, member.name)
+        ::match member.type {
+            ::case typeid(string) => append(args, json_require(value, "string"))
+            ::case typeid(int) => append(args, json_require(value, "int"))
+            ::case typeid(float) => append(args, json_require(value, "float"))
+            ::case typeid(bool) => append(args, json_require(value, "bool"))
+            ::case typeid(object) => append(args, from_json(value))
+            ::default => fail("unsupported JSON field type")
+        }
+    }
+    return ::construct(T, args)
+}
+
+func decode_json<T>(s: string): T {
+    return from_json<T>(parse_json(s))
+}
+
+json_text = "{\"name\":\"Ada\",\"age\":36,\"height\":1.68,\"active\":true,\"detail\":{\"some_info\":\"ok\"}}"
+p = decode_json<Person>(json_text)
+println("name=", p.name, " age=", p.age, " height=", p.height, " active=", p.active)
+println("detail=", p.detail.some_info)
+
+monitor {
+    bad = decode_json<Person>("{\"name\":\"bad\",\"age\":\"nope\"}")
+    println("should not reach ", bad.name)
+} trap(err: exception) {
+    println("caught: ", err.message)
+}

@@ -1,0 +1,50 @@
+package reflexpr_
+
+//munx has only compile time reflection
+// 
+object Detail {
+    some_info: string
+}
+
+object Person {
+    name: string,
+    age: int,
+    height: float,
+    detail: Detail
+}
+
+
+
+func serialize<T>(p: T): void { // T is a generic type
+    refl_artifact = ::reflexpr(p) // ::reflexpr is a keyword, it reflects on object types and functions or lambdas, if a value is passed it reflect on the
+    // type of the value passed, Returns a ObjectReflectionArtifact
+    members = ::members(refl_artifact) // ::members is a keyword, returns a ObjectFieldReflectionArtifactArray
+    ::reflect_for(member of members) { //::reflect_for is a keyword for a loop through an array of FieldReflectionArtifact (ObjectFieldReflectionArtifactArray)
+        ::match member.type { //.type is a field of an opaque type ObjectFieldReflectionArtifact that returns a typeid another opaque compiler representation of the type
+            ::case typeid(object) => println("object member: ", member.name) //.name is a field on the opaque ObjectFieldReflectionArtifact type that returns a string of the name of the field
+            ::default => println("primitive member: ", member.name)
+        }
+    }
+}
+
+p = Person("dummy name", 2, 10.23, Detail("some detail"))
+// Type args may be explicit (`serialize<Person>(p)`) or inferred:
+serialize(p)
+
+func add<T>(x: T, y: T): T {
+    return x + y;
+}
+
+refl_func = ::reflexpr(add) //FunctionReflectionAritifact
+println("Meta Function name: ", refl_func.name, " owning package: ", refl_func.package_name)
+if refl_func.is_meta_function { //is_meta_function checks if a FunctionReflectionAritifact is a meta function, a meta function is a function with generic type parameters
+    generic_params = ::meta_params(refl_func) // returns generic type paramters MetaParamReflectionArtifact { has fields name}
+    ::reflect_for(param of generic_params) {
+        println("generic param: ", param.name)
+    }
+}
+func_params = ::params(refl_func) // ::params is a keyword that takes a ReflectionArtifact of only function types, return FunctionParamReflectionAritifactArray
+::reflect_for(param of func_params) {
+    println("param: {", param.name, ",", param.type, "}")
+}
+

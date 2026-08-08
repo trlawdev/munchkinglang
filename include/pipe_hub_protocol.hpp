@@ -38,6 +38,12 @@ enum class opcode : uint8_t
     Deliver = 6,
     Ack = 7,
     Error = 8,
+    /// Bidirectional channel handshake (exactly two peers per channel id).
+    ChannelOffer = 9,     ///< Peer wants to send; hub replies Accept or Busy.
+    ChannelAccept = 10,   ///< Hub → offerer: peer is ready for payload.
+    ChannelBusy = 11,     ///< Collision: both peers offered; retry after backoff.
+    ChannelRecvReady = 12,///< Peer is blocked in extract waiting for data.
+    ChannelDataAck = 13,  ///< Receiver acknowledged payload delivery.
 };
 
 enum class attachment_mode : uint8_t
@@ -45,6 +51,17 @@ enum class attachment_mode : uint8_t
     Writer = 0,
     QueueIn = 1,
     BroadcastIn = 2,
+    ChannelPeer = 3, ///< Bidirectional channel endpoint (max 2 per pipe id).
+};
+
+/// Identifies the process class that opened a hub connection.
+/// Optional trailing field on Hello; absent ⇒ Unknown (legacy clients).
+enum class client_kind : uint8_t
+{
+    Unknown = 0,
+    Vm = 1,     ///< munx bytecode VM / JIT process
+    Native = 2, ///< natively compiled munx executable
+    Tool = 3,   ///< external tooling (Python probes, etc.)
 };
 
 /// Resolve the host directory for pipes and the hub socket.
@@ -209,11 +226,13 @@ inline std::vector<std::byte> encode_frame(std::span<const std::byte> body)
     return frame;
 }
 
-inline std::vector<std::byte> encode_hello(uint64_t pid)
+inline std::vector<std::byte> encode_hello(uint64_t pid,
+                                           client_kind kind = client_kind::Unknown)
 {
     std::vector<std::byte> body;
     append_u8(body, static_cast<uint8_t>(opcode::Hello));
     append_u64(body, pid);
+    append_u8(body, static_cast<uint8_t>(kind));
     return encode_frame(body);
 }
 
@@ -281,10 +300,19 @@ inline std::vector<std::byte> encode_error(std::string_view message)
     return encode_frame(body);
 }
 
+inline std::vector<std::byte> encode_channel_op(opcode kind, std::string_view channel)
+{
+    std::vector<std::byte> body;
+    append_u8(body, static_cast<uint8_t>(kind));
+    append_string(body, channel);
+    return encode_frame(body);
+}
+
 struct message
 {
     opcode kind{opcode::Ack};
     uint64_t pid{0};
+    client_kind client{client_kind::Unknown};
     std::string channel;
     attachment_mode mode{attachment_mode::Writer};
     std::vector<std::byte> payload;
@@ -300,6 +328,11 @@ inline message decode_message(std::span<const std::byte> body)
     {
     case opcode::Hello:
         decoded.pid = input.u64();
+        // Optional client_kind for native / tool peers (legacy Hellos omit it).
+        if (!input.remaining().empty())
+        {
+            decoded.client = static_cast<client_kind>(input.u8());
+        }
         break;
     case opcode::Bye:
         break;
@@ -321,6 +354,13 @@ inline message decode_message(std::span<const std::byte> body)
         break;
     case opcode::Error:
         decoded.text = input.string();
+        break;
+    case opcode::ChannelOffer:
+    case opcode::ChannelAccept:
+    case opcode::ChannelBusy:
+    case opcode::ChannelRecvReady:
+    case opcode::ChannelDataAck:
+        decoded.channel = input.string();
         break;
     }
     return decoded;

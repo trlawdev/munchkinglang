@@ -9,6 +9,7 @@
 #include "jit/jit_compiler.hpp"
 #include "regex_util.hpp"
 #include "simd_ops.hpp"
+#include "json.hpp"
 #include "vm_pipe.hpp"
 #include "vm_value.hpp"
 #include <algorithm>
@@ -736,6 +737,16 @@ public:
         return expect_pipe(load_name(current, name), name)->extract();
     }
 
+    void jit_channel_insert(frame &current, const std::string &name, value &item)
+    {
+        expect_pipe(load_name(current, name), name)->channel_insert(item);
+    }
+
+    value jit_channel_extract(frame &current, const std::string &name)
+    {
+        return expect_pipe(load_name(current, name), name)->channel_extract();
+    }
+
     void jit_lock_create(frame &current, const std::string &name)
     {
         auto guard = std::make_shared<lock_object>();
@@ -1139,6 +1150,33 @@ private:
             }
             return value{};
         });
+        define_builtin("parse_json", [](virtual_machine &, value_vector &arguments) {
+            expect_arity(arguments, 1, 1, "parse_json");
+            const std::string &text = expect_string(arguments.front(), "parse_json");
+            const json::parse_result parsed = json::parse(text);
+            if (!parsed.ok)
+            {
+                throw_error(std::string{"parse_json: "} + parsed.message);
+                return value{};
+            }
+            return parsed.value;
+        });
+        define_builtin("json_field", [](virtual_machine &, value_vector &arguments) {
+            expect_arity(arguments, 2, 3, "json_field");
+            const std::string key = expect_string(arguments[1], "json_field");
+            const std::string context =
+                arguments.size() > 2 ? expect_string(arguments[2], "json_field")
+                                     : std::string{"json_field"};
+            return json::field_required(arguments[0], key, context);
+        });
+        define_builtin("json_require", [](virtual_machine &, value_vector &arguments) {
+            expect_arity(arguments, 2, 3, "json_require");
+            const std::string kind = expect_string(arguments[1], "json_require");
+            const std::string context =
+                arguments.size() > 2 ? expect_string(arguments[2], "json_require")
+                                     : std::string{"json_require"};
+            return json::require_kind(arguments[0], kind, context);
+        });
     }
 
     void install_io_builtins()
@@ -1244,6 +1282,15 @@ private:
                 throw_error("pipe mode must be `in`, `out`, or `subscribe`");
             }
             return value{pipe_object::open(id, reading, writing, subscribing)};
+        });
+        define_builtin("channel", [](virtual_machine &, value_vector &arguments) {
+            expect_arity(arguments, 1, 1, "channel");
+            const std::string id = to_display_string(arguments.front());
+            if (id.empty())
+            {
+                throw_error("channel id must be a non-empty string");
+            }
+            return value{pipe_object::open_channel(id)};
         });
         define_builtin("thread", [](virtual_machine &machine,
                                     value_vector &arguments) {
@@ -2750,6 +2797,23 @@ private:
                     const std::string name = read_name(current);
                     current.stack.push_back(
                         expect_pipe(load_name(current, name), name)->extract());
+                    break;
+                }
+                case Opcode::CHANNEL_INSERT:
+                {
+                    const std::string name = read_name(current);
+                    value item = pop(current);
+                    expect_pipe(load_name(current, name), name)
+                        ->channel_insert(item);
+                    current.stack.push_back(value{});
+                    break;
+                }
+                case Opcode::CHANNEL_EXTRACT:
+                {
+                    const std::string name = read_name(current);
+                    current.stack.push_back(
+                        expect_pipe(load_name(current, name), name)
+                            ->channel_extract());
                     break;
                 }
                 case Opcode::DEFINE_ENUM:

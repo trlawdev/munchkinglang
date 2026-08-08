@@ -54,10 +54,42 @@ inline bool hub_endpoint_ready()
 #endif
 }
 
+#if MUNX_PLATFORM_POSIX
+inline void set_cloexec_nonblock(int fd)
+{
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags >= 0)
+    {
+        (void)::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+    flags = ::fcntl(fd, F_GETFD, 0);
+    if (flags >= 0)
+    {
+        (void)::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+}
+#endif
+
+/// Connected hub endpoint. On POSIX this is an AF_UNIX SOCK_STREAM socket.
 class hub_connection
 {
 public:
     hub_connection() = default;
+    ~hub_connection() { close(); }
+
+    hub_connection(const hub_connection &) = delete;
+    hub_connection &operator=(const hub_connection &) = delete;
+
+    hub_connection(hub_connection &&other) noexcept { move_from(std::move(other)); }
+    hub_connection &operator=(hub_connection &&other) noexcept
+    {
+        if (this != &other)
+        {
+            close();
+            move_from(std::move(other));
+        }
+        return *this;
+    }
 
 #if MUNX_PLATFORM_POSIX
     explicit hub_connection(int fd) : fd_{fd} {}
@@ -120,12 +152,25 @@ public:
 #if MUNX_PLATFORM_POSIX
             const ssize_t chunk =
                 ::write(fd_, data.data() + written, data.size() - written);
-            if (chunk <= 0)
+            if (chunk < 0)
             {
-                if (chunk < 0 && errno == EINTR)
+                if (errno == EINTR)
                 {
                     continue;
                 }
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    pollfd out{fd_, POLLOUT, 0};
+                    if (::poll(&out, 1, 500) <= 0)
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+                return false;
+            }
+            if (chunk == 0)
+            {
                 return false;
             }
             written += static_cast<size_t>(chunk);
@@ -147,6 +192,7 @@ public:
         return true;
     }
 
+    /// @return >0 bytes read; 0 = would-block / interrupt (retry); -1 = EOF or error.
     [[nodiscard]] ssize_t read_some(void *buffer, size_t length) const
     {
         if (!valid() || length == 0)
@@ -163,6 +209,10 @@ public:
             }
             return -1;
         }
+        if (chunk == 0)
+        {
+            return -1; // peer closed
+        }
         return chunk;
 #else
         DWORD received = 0;
@@ -172,13 +222,33 @@ public:
             const DWORD error = GetLastError();
             if (error == ERROR_BROKEN_PIPE)
             {
+                return -1;
+            }
+            if (error == ERROR_NO_DATA)
+            {
                 return 0;
             }
+            return -1;
+        }
+        if (received == 0)
+        {
             return -1;
         }
         return static_cast<ssize_t>(received);
 #endif
     }
+
+#if MUNX_PLATFORM_POSIX
+    [[nodiscard]] bool set_nonblocking() const
+    {
+        if (!valid())
+        {
+            return false;
+        }
+        set_cloexec_nonblock(fd_);
+        return true;
+    }
+#endif
 
     [[nodiscard]] bool poll_readable(int timeout_ms) const
     {
@@ -193,7 +263,10 @@ public:
         {
             return false;
         }
-        return (descriptor.revents & POLLIN) != 0;
+        // POLLHUP/ERR must wake the reader so it can observe EOF and exit;
+        // otherwise disconnect() can hang joining a reader stuck in poll.
+        return (descriptor.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) !=
+               0;
 #else
         (void)timeout_ms;
         return valid();
@@ -201,6 +274,17 @@ public:
     }
 
 private:
+    void move_from(hub_connection &&other) noexcept
+    {
+#if MUNX_PLATFORM_POSIX
+        fd_ = other.fd_;
+        other.fd_ = -1;
+#else
+        handle_ = other.handle_;
+        other.handle_ = INVALID_HANDLE_VALUE;
+#endif
+    }
+
 #if MUNX_PLATFORM_POSIX
     int fd_{-1};
 #else
@@ -245,6 +329,7 @@ public:
             ::close(fd);
             return false;
         }
+        set_cloexec_nonblock(fd);
         listen_fd_ = fd;
         return true;
 #else
@@ -268,7 +353,9 @@ public:
         {
             return std::nullopt;
         }
-        return hub_connection{client_fd};
+        hub_connection connection{client_fd};
+        (void)connection.set_nonblocking();
+        return connection;
 #else
         if (!active_)
         {
@@ -521,14 +608,17 @@ inline std::optional<hub_connection> connect_hub()
     if (::connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof address) != 0)
     {
         ::close(fd);
-        if ((errno == ECONNREFUSED || errno == ENOENT) && !hub_process_alive())
+        if ((errno == ECONNREFUSED || errno == ENOENT || errno == EPROTOTYPE) &&
+            !hub_process_alive())
         {
             std::error_code remove_error;
             std::filesystem::remove(hub_socket_path(), remove_error);
         }
         return std::nullopt;
     }
-    return hub_connection{fd};
+    hub_connection connection{fd};
+    (void)connection.set_nonblocking();
+    return connection;
 #else
     const std::string pipe_name = hub_pipe_name();
     if (!::WaitNamedPipeA(pipe_name.c_str(), 2000))

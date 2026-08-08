@@ -51,10 +51,11 @@ namespace munx
                 tok_col_ = col_;
                 if (eof())
                 {
-                    tokens.push_back(make(token_type::END, std::string{}));
+                    auto char_variant = value_variant{'\0'};
+                    tokens.emplace_back(make(token_type::END, char_variant));
                     break;
                 }
-                tokens.push_back(next_token());
+                tokens.emplace_back(next_token());
             }
             return tokens;
         }
@@ -72,7 +73,7 @@ namespace munx
         /// @return Character at @p pos_ + @p off, or `'\0'` if out of range.
         char peek(long long off = 0) const
         {
-            return eof(off) ? '\0' : source_[static_cast<std::size_t>(pos_ + off)];
+            return eof(off) ? '\0' : source_[pos_ + off];
         }
 
         /// Consume @p n characters, updating line/column (handles newlines).
@@ -80,7 +81,7 @@ namespace munx
         {
             for (long long i = 0; i < n && !eof(); ++i)
             {
-                if (source_[static_cast<std::size_t>(pos_)] == '\n')
+                if (source_[pos_] == '\n')
                 {
                     ++line_;
                     col_ = 1;
@@ -108,9 +109,9 @@ namespace munx
         }
 
         /// Build a token stamped with @ref tok_line_ / @ref tok_col_.
-        token make(token_type type, std::variant<long long, long double, std::string> value) const
+        token make(token_type type, const value_variant &value) const
         {
-            return token{tok_line_, tok_col_, type, std::move(value)};
+            return token{tok_line_, tok_col_, type, std::move(const_cast<value_variant&>(value))};
         }
 
         /// Skip whitespace, `//` line comments, and `/* */` block comments.
@@ -181,153 +182,184 @@ namespace munx
             {
                 return lex_number();
             }
-
+            
+            value_variant c{};
             switch (peek())
             {
             case '"':
                 return lex_string();
             case '\'':
                 return lex_char();
-            case '(':
+            case '(': {
+                c = '(';
                 advance_no_newline();
-                return make(token_type::LPAREN, std::string{"("});
+                return make(token_type::LPAREN, c);
+            }
             case ')':
+                c = ')';
                 advance_no_newline();
-                return make(token_type::RPAREN, std::string{")"});
+                return make(token_type::RPAREN, c);
             case '{':
+                c = '{';
                 advance_no_newline();
-                return make(token_type::LBRACE, std::string{"{"});
+                return make(token_type::LBRACE, c);
             case '}':
+                c = '}';
                 advance_no_newline();
-                return make(token_type::RBRACE, std::string{"}"});
+                return make(token_type::RBRACE, c);
             case '[':
+                c = '[';
                 advance_no_newline();
-                return make(token_type::LBRACKET, std::string{"["});
+                return make(token_type::LBRACKET, c);
             case ']':
+                c = ']';
                 advance_no_newline();
-                return make(token_type::RBRACKET, std::string{"]"});
+                return make(token_type::RBRACKET, c);
             case ',':
+                c = ',';
                 advance_no_newline();
-                return make(token_type::COMMA, std::string{","});
+                return make(token_type::COMMA, c);
             case ';':
+                c = ';';
                 advance_no_newline();
-                return make(token_type::SEMICOLON, std::string{";"});
+                return make(token_type::SEMICOLON, c);
             case '.':
+                c = '.';
                 advance_no_newline();
-                return make(token_type::DOT, std::string{"."});
+                return make(token_type::DOT, c);
             case ':':
                 if (peek(1) == ':')
                 {
+                    c = std::string{"::"};
                     advance_no_newline(2);
-                    return make(token_type::SCOPE, std::string{"::"});
+                    return make(token_type::SCOPE, c);
                 }
+                if (peek(1) == '=' && peek(2) == '>')
+                {
+                    c = std::string{":=>"};
+                    advance_no_newline(3);
+                    return make(token_type::CHANNEL_INSERT, c);
+                }
+                c = ':';
                 advance_no_newline();
-                return make(token_type::COLON, std::string{":"});
+                return make(token_type::COLON, c);
             case '+':
                 if (peek(1) == '=')
                 {
+                    c = std::string{"+="};
                     advance_no_newline(2);
-                    return make(token_type::ADD_ASSIGN, std::string{"+="});
+                    return make(token_type::ADD_ASSIGN, c);
                 }
+                c = '+';
                 advance_no_newline();
-                return make(token_type::PLUS, std::string{"+"});
+                return make(token_type::PLUS, c);
             case '-':
                 if (peek(1) == '>')
                 {
+                    c = "->";
                     advance_no_newline(2);
-                    return make(token_type::PIPE_INSERT, std::string{"->"});
+                    return make(token_type::PIPE_INSERT, c);
                 }
+                c = '-';
                 advance_no_newline();
-                return make(token_type::MINUS, std::string{"-"});
+                return make(token_type::MINUS, c);
             case '*':
+                c = '*';
                 advance_no_newline();
-                return make(token_type::STAR, std::string{"*"});
+                return make(token_type::STAR, c);
             case '/':
+                c = '/';
                 advance_no_newline();
-                return make(token_type::SLASH, std::string{"/"});
+                return make(token_type::SLASH, c);
             case '%':
+                c = '%';
                 advance_no_newline();
-                return make(token_type::PERCENT, std::string{"%"});
+                return make(token_type::PERCENT, c);
             case '=':
                 if (peek(1) == '=')
                 {
                     advance_no_newline(2);
-                    return make(token_type::EQ, std::string{"=="});
+                    return make(token_type::EQ, c = std::string{"=="});
                 }
                 if (peek(1) == '>')
                 {
                     advance_no_newline(2);
-                    return make(token_type::ARROW, std::string{"=>"});
+                    return make(token_type::ARROW, c = std::string{"=>"});
                 }
                 advance_no_newline();
-                return make(token_type::ASSIGN, std::string{"="});
+                return make(token_type::ASSIGN, c = std::string{"="});
             case '!':
                 if (peek(1) == '=')
                 {
                     advance_no_newline(2);
-                    return make(token_type::NE, std::string{"!="});
+                    return make(token_type::NE, c = std::string{"!="});
                 }
                 advance_no_newline();
-                return make(token_type::BANG, std::string{"!"});
+                return make(token_type::BANG, c = std::string{"!"});
             case '<':
+                if (peek(1) == '=' && peek(2) == ':')
+                {
+                    advance_no_newline(3);
+                    return make(token_type::CHANNEL_EXTRACT, c = std::string{"<=:"});
+                }
                 if (peek(1) == '=')
                 {
                     advance_no_newline(2);
-                    return make(token_type::LE, std::string{"<="});
+                    return make(token_type::LE, c = std::string{"<="});
                 }
                 if (peek(1) == '-')
                 {
                     advance_no_newline(2);
-                    return make(token_type::PIPE_EXTRACT, std::string{"<-"});
+                    return make(token_type::PIPE_EXTRACT, c = std::string{"<-"});
                 }
                 advance_no_newline();
-                return make(token_type::LT, std::string{"<"});
+                return make(token_type::LT, c = std::string{"<"});
             case '>':
                 if (peek(1) == '=')
                 {
                     advance_no_newline(2);
-                    return make(token_type::GE, std::string{">="});
+                    return make(token_type::GE, c = std::string{">="});
                 }
                 advance_no_newline();
-                return make(token_type::GT, std::string{">"});
+                return make(token_type::GT, c = std::string{">"});
             case '&':
                 if (peek(1) == '&')
                 {
                     advance_no_newline(2);
-                    return make(token_type::AND_AND, std::string{"&&"});
+                    return make(token_type::AND_AND, c = std::string{"&&"});
                 }
                 advance_no_newline();
-                return make(token_type::AMP, std::string{"&"});
+                return make(token_type::AMP, c = std::string{"&"});
             case '|':
                 if (peek(1) == '|')
                 {
                     advance_no_newline(2);
-                    return make(token_type::OR_OR, std::string{"||"});
+                    return make(token_type::OR_OR, c = std::string{"||"});
                 }
                 advance_no_newline();
-                return make(token_type::PIPE, std::string{"|"});
+                return make(token_type::PIPE, c = std::string{"|"});
             case '^':
                 advance_no_newline();
-                return make(token_type::CARET, std::string{"^"});
+                return make(token_type::CARET, c = std::string{"^"});
             case '~':
                 advance_no_newline();
-                return make(token_type::TILDE, std::string{"~"});
+                return make(token_type::TILDE, c = std::string{"~"});
             default:
                 fail("unexpected character");
-                return make(token_type::END, std::string{});
+                //return make(token_type::END, c = std::string{});
             }
         }
 
         /// Lex an identifier, keyword, or `true`/`false`/`null` literal.
         token lex_ident()
         {
-            const std::size_t start = static_cast<std::size_t>(pos_);
+            const std::size_t start = pos_;
             while (!eof() && is_ident_cont(peek()))
             {
                 advance_no_newline();
             }
             // Single allocation for the whole identifier.
-            std::string text = source_.substr(start, static_cast<std::size_t>(pos_) - start);
+            std::string text = source_.substr(start, pos_ - start);
 
             if (text == "true" || text == "false")
             {

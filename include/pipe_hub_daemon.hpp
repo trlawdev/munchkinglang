@@ -31,25 +31,35 @@ struct client_state
 {
     transport::hub_connection connection;
     uint64_t pid{0};
+    client_kind kind{client_kind::Unknown};
     std::vector<std::byte> input;
     size_t frame_size{0};
     bool have_header{false};
     std::vector<std::pair<std::string, attachment_mode>> attachments;
 };
 
+/// Per pipe_id (channel name) routing + backlog.
+/// Publishes with no live readers are stored in @c pending until a reader
+/// attaches (readers may only attach while at least one Writer is present).
 struct channel_state
 {
+    static constexpr size_t max_pending = 4096;
+
     std::vector<client_id> queue_readers;
     std::vector<client_id> broadcast_readers;
     std::vector<client_id> writers;
+    /// Bidirectional channel peers (at most two).
+    std::vector<client_id> channel_peers;
+    /// Backlog indexed by pipe_id (this map key): payloads awaiting readers.
     std::deque<std::vector<std::byte>> pending;
-    struct blocked_publish
-    {
-        client_id writer_id{0};
-        std::vector<std::byte> payload;
-    };
-    std::deque<blocked_publish> blocked;
     size_t queue_cursor{0};
+    /// Channel handshake bookkeeping.
+    client_id offer_from{0};
+    bool have_offer{false};
+    client_id recv_ready{0};
+    bool have_recv_ready{false};
+    client_id awaiting_data_ack{0};
+    bool have_awaiting_data_ack{false};
 };
 
 inline void remove_client_from_channel(channel_state &channel, client_id id)
@@ -60,6 +70,22 @@ inline void remove_client_from_channel(channel_state &channel, client_id id)
     erase_id(channel.queue_readers);
     erase_id(channel.broadcast_readers);
     erase_id(channel.writers);
+    erase_id(channel.channel_peers);
+    if (channel.have_offer && channel.offer_from == id)
+    {
+        channel.have_offer = false;
+        channel.offer_from = 0;
+    }
+    if (channel.have_recv_ready && channel.recv_ready == id)
+    {
+        channel.have_recv_ready = false;
+        channel.recv_ready = 0;
+    }
+    if (channel.have_awaiting_data_ack && channel.awaiting_data_ack == id)
+    {
+        channel.have_awaiting_data_ack = false;
+        channel.awaiting_data_ack = 0;
+    }
 }
 
 inline bool channel_has_reader(const channel_state &channel)
@@ -97,8 +123,24 @@ struct daemon_state
         (void)next_client_id;
         return static_cast<client_id>(connection.native_fd());
 #else
+        (void)connection;
         return next_client_id++;
 #endif
+    }
+
+    void maybe_erase_channel(const std::string &channel)
+    {
+        auto channel_it = channels.find(channel);
+        if (channel_it == channels.end())
+        {
+            return;
+        }
+        const channel_state &state = channel_it->second;
+        if (!channel_has_reader(state) && state.pending.empty() &&
+            state.writers.empty() && state.channel_peers.empty())
+        {
+            channels.erase(channel_it);
+        }
     }
 
     void close_client(client_id id)
@@ -108,80 +150,59 @@ struct daemon_state
         {
             return;
         }
-        for (auto &[channel_name, channel] : channels)
-        {
-            channel.blocked.erase(
-                std::remove_if(channel.blocked.begin(), channel.blocked.end(),
-                               [id](const channel_state::blocked_publish &item) {
-                                   return item.writer_id == id;
-                               }),
-                channel.blocked.end());
-        }
         for (const auto &[channel, mode] : found->second.attachments)
         {
             auto channel_it = channels.find(channel);
             if (channel_it != channels.end())
             {
                 remove_client_from_channel(channel_it->second, id);
-                if (!channel_has_reader(channel_it->second) &&
-                    channel_it->second.pending.empty() &&
-                    channel_it->second.queue_readers.empty() &&
-                    channel_it->second.broadcast_readers.empty() &&
-                    channel_it->second.writers.empty())
-                {
-                    channels.erase(channel_it);
-                }
+                maybe_erase_channel(channel);
             }
         }
         found->second.connection.close();
         clients.erase(found);
     }
 
-    void flush_blocked(const std::string &channel)
+    /// Push queued payloads for @p channel to currently attached readers.
+    void flush_pending(const std::string &channel)
     {
         channel_state &state = channels[channel];
-        while (!state.blocked.empty() && channel_has_reader(state))
+        while (!state.pending.empty() && channel_has_reader(state))
         {
-            channel_state::blocked_publish blocked = std::move(state.blocked.front());
-            state.blocked.pop_front();
-
-            for (const client_id reader_id : state.broadcast_readers)
-            {
-                auto reader = clients.find(reader_id);
-                if (reader == clients.end())
-                {
-                    continue;
-                }
-                if (!deliver_payload(reader->second.connection, channel,
-                                     attachment_mode::BroadcastIn, blocked.payload))
-                {
-                    close_client(reader_id);
-                }
-            }
-            if (!state.queue_readers.empty())
-            {
-                const size_t index = state.queue_cursor % state.queue_readers.size();
-                state.queue_cursor += 1;
-                const client_id reader_id = state.queue_readers[index];
-                auto reader = clients.find(reader_id);
-                if (reader != clients.end() &&
-                    !deliver_payload(reader->second.connection, channel,
-                                     attachment_mode::QueueIn, blocked.payload))
-                {
-                    close_client(reader_id);
-                }
-            }
-
-            auto writer = clients.find(blocked.writer_id);
-            if (writer != clients.end())
-            {
-                const std::vector<std::byte> ack = encode_ack();
-                if (!deliver_to_client(writer->second.connection, ack))
-                {
-                    close_client(blocked.writer_id);
-                }
-            }
+            const std::vector<std::byte> payload = std::move(state.pending.front());
+            state.pending.pop_front();
+            deliver_to_readers(channel, payload);
         }
+    }
+
+    bool send_ack(client_id id)
+    {
+        auto found = clients.find(id);
+        if (found == clients.end())
+        {
+            return false;
+        }
+        if (!deliver_to_client(found->second.connection, encode_ack()))
+        {
+            close_client(id);
+            return false;
+        }
+        return true;
+    }
+
+    bool send_error(client_id id, std::string_view message)
+    {
+        auto found = clients.find(id);
+        if (found == clients.end())
+        {
+            return false;
+        }
+        if (!deliver_to_client(found->second.connection, encode_error(message)))
+        {
+            close_client(id);
+            return false;
+        }
+        return true;
     }
 
     void deliver_to_readers(const std::string &channel,
@@ -216,12 +237,33 @@ struct daemon_state
         }
     }
 
-    void register_attachment(client_id id, const std::string &channel,
+    /// @return true when Attach succeeded (Ack already sent).
+    bool register_attachment(client_id id, const std::string &channel,
                              attachment_mode mode)
     {
+        channel_state &state = channels[channel];
+
+        // Readers may only join a pipe that already has a live publisher.
+        if ((mode == attachment_mode::QueueIn ||
+             mode == attachment_mode::BroadcastIn) &&
+            state.writers.empty())
+        {
+            send_error(id, "pipe `" + channel +
+                               "` has no publisher; open pipe(name, out) first");
+            maybe_erase_channel(channel);
+            return false;
+        }
+        if (mode == attachment_mode::ChannelPeer &&
+            state.channel_peers.size() >= 2)
+        {
+            send_error(id, "channel `" + channel +
+                               "` already has two peers");
+            maybe_erase_channel(channel);
+            return false;
+        }
+
         client_state &client = clients.at(id);
         client.attachments.emplace_back(channel, mode);
-        channel_state &state = channels[channel];
         switch (mode)
         {
         case attachment_mode::Writer:
@@ -229,28 +271,41 @@ struct daemon_state
             break;
         case attachment_mode::BroadcastIn:
             state.broadcast_readers.push_back(id);
-            flush_blocked(channel);
             break;
         case attachment_mode::QueueIn:
             state.queue_readers.push_back(id);
-            while (!state.pending.empty() && !state.queue_readers.empty())
-            {
-                const std::vector<std::byte> payload = std::move(state.pending.front());
-                state.pending.pop_front();
-                const size_t index = state.queue_cursor % state.queue_readers.size();
-                state.queue_cursor += 1;
-                const client_id reader_id = state.queue_readers[index];
-                auto reader = clients.find(reader_id);
-                if (reader != clients.end() &&
-                    !deliver_payload(reader->second.connection, channel,
-                                     attachment_mode::QueueIn, payload))
-                {
-                    close_client(reader_id);
-                }
-            }
-            flush_blocked(channel);
+            break;
+        case attachment_mode::ChannelPeer:
+            state.channel_peers.push_back(id);
             break;
         }
+        // Ack before draining backlog so attach cannot deadlock behind a full
+        // socket buffer while the client is still waiting for Attach's Ack.
+        if (!send_ack(id))
+        {
+            return false;
+        }
+        if (mode == attachment_mode::BroadcastIn ||
+            mode == attachment_mode::QueueIn)
+        {
+            flush_pending(channel);
+        }
+        else if (mode == attachment_mode::ChannelPeer)
+        {
+            while (!state.pending.empty())
+            {
+                const std::vector<std::byte> payload =
+                    std::move(state.pending.front());
+                state.pending.pop_front();
+                if (!deliver_payload(client.connection, channel,
+                                     attachment_mode::ChannelPeer, payload))
+                {
+                    close_client(id);
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     void unregister_attachment(client_id id, const std::string &channel,
@@ -265,6 +320,7 @@ struct daemon_state
         if (channel_it != channels.end())
         {
             remove_client_from_channel(channel_it->second, id);
+            maybe_erase_channel(channel);
         }
     }
 
@@ -272,34 +328,177 @@ struct daemon_state
                          const std::vector<std::byte> &payload)
     {
         channel_state &state = channels[channel];
-        if (!channel_has_reader(state))
+
+        // Channel peer data path: deliver to every other peer; backlog if none.
+        if (std::find(state.channel_peers.begin(), state.channel_peers.end(),
+                      writer_id) != state.channel_peers.end())
         {
-            state.blocked.push_back(channel_state::blocked_publish{writer_id, payload});
-            auto writer = clients.find(writer_id);
-            if (writer != clients.end())
+            bool delivered = false;
+            for (const client_id peer : state.channel_peers)
             {
-                const std::vector<std::byte> ack = encode_ack();
-                if (!deliver_to_client(writer->second.connection, ack))
+                if (peer == writer_id)
                 {
-                    close_client(writer_id);
-                    return false;
+                    continue;
+                }
+                auto peer_it = clients.find(peer);
+                if (peer_it == clients.end())
+                {
+                    continue;
+                }
+                if (deliver_payload(peer_it->second.connection, channel,
+                                    attachment_mode::ChannelPeer, payload))
+                {
+                    delivered = true;
                 }
             }
-            return true;
+            if (!delivered)
+            {
+                if (state.pending.size() >= channel_state::max_pending)
+                {
+                    return send_error(writer_id,
+                                      "channel `" + channel +
+                                          "` pending queue is full");
+                }
+                state.pending.push_back(payload);
+                // If a peer already signalled RecvReady, push immediately.
+                if (state.have_recv_ready && state.recv_ready != writer_id)
+                {
+                    auto ready = clients.find(state.recv_ready);
+                    if (ready != clients.end())
+                    {
+                        while (!state.pending.empty())
+                        {
+                            const std::vector<std::byte> item =
+                                std::move(state.pending.front());
+                            state.pending.pop_front();
+                            if (!deliver_payload(ready->second.connection, channel,
+                                                 attachment_mode::ChannelPeer,
+                                                 item))
+                            {
+                                break;
+                            }
+                            delivered = true;
+                        }
+                    }
+                }
+            }
+            return send_ack(writer_id);
+        }
+
+        if (!channel_has_reader(state))
+        {
+            if (state.pending.size() >= channel_state::max_pending)
+            {
+                return send_error(writer_id,
+                                  "pipe `" + channel + "` pending queue is full");
+            }
+            state.pending.push_back(payload);
+            return send_ack(writer_id);
         }
 
         deliver_to_readers(channel, payload);
-        auto writer = clients.find(writer_id);
-        if (writer == clients.end())
+        return send_ack(writer_id);
+    }
+
+    client_id other_channel_peer(const channel_state &state, client_id id) const
+    {
+        for (const client_id candidate : state.channel_peers)
         {
-            return false;
+            if (candidate != id)
+            {
+                return candidate;
+            }
         }
-        const std::vector<std::byte> ack = encode_ack();
-        if (!deliver_to_client(writer->second.connection, ack))
+        return 0;
+    }
+
+    bool handle_channel_offer(client_id id, const std::string &channel)
+    {
+        channel_state &state = channels[channel];
+        if (std::find(state.channel_peers.begin(), state.channel_peers.end(),
+                      id) == state.channel_peers.end())
         {
-            close_client(writer_id);
-            return false;
+            return send_error(id, "not attached to channel `" + channel + "`");
         }
+        if (state.have_offer && state.offer_from != id)
+        {
+            // Collision: both peers tried to send at once.
+            const client_id other = state.offer_from;
+            state.have_offer = false;
+            state.offer_from = 0;
+            (void)deliver_to_client(
+                clients.at(id).connection,
+                encode_channel_op(opcode::ChannelBusy, channel));
+            if (clients.contains(other))
+            {
+                (void)deliver_to_client(
+                    clients.at(other).connection,
+                    encode_channel_op(opcode::ChannelBusy, channel));
+            }
+            return true;
+        }
+        // Grant when the peer is attached and/or has announced RecvReady.
+        // Parking only when the other peer is missing avoids a sender/receiver
+        // lockstep stall on the second message of a dialogue.
+        const client_id peer = other_channel_peer(state, id);
+        if (peer != 0 || (state.have_recv_ready && state.recv_ready != id))
+        {
+            state.have_recv_ready = false;
+            state.recv_ready = 0;
+            state.have_offer = false;
+            state.offer_from = 0;
+            return deliver_to_client(
+                clients.at(id).connection,
+                encode_channel_op(opcode::ChannelAccept, channel));
+        }
+        state.have_offer = true;
+        state.offer_from = id;
+        return true;
+    }
+
+    bool handle_channel_recv_ready(client_id id, const std::string &channel)
+    {
+        channel_state &state = channels[channel];
+        if (std::find(state.channel_peers.begin(), state.channel_peers.end(),
+                      id) == state.channel_peers.end())
+        {
+            return send_error(id, "not attached to channel `" + channel + "`");
+        }
+        if (state.have_offer && state.offer_from != id)
+        {
+            const client_id offerer = state.offer_from;
+            state.have_offer = false;
+            state.offer_from = 0;
+            (void)deliver_to_client(
+                clients.at(offerer).connection,
+                encode_channel_op(opcode::ChannelAccept, channel));
+        }
+        // Drain backlog onto this receiver.
+        auto self = clients.find(id);
+        while (self != clients.end() && !state.pending.empty())
+        {
+            const std::vector<std::byte> payload = std::move(state.pending.front());
+            state.pending.pop_front();
+            if (!deliver_payload(self->second.connection, channel,
+                                 attachment_mode::ChannelPeer, payload))
+            {
+                close_client(id);
+                return false;
+            }
+        }
+        state.have_recv_ready = true;
+        state.recv_ready = id;
+        return true;
+    }
+
+    bool handle_channel_data_ack(client_id id, const std::string &channel)
+    {
+        // Optional receipt ack from the receiver; sender is already Ack'd after
+        // Deliver so this is informational / cleanup only.
+        (void)id;
+        channel_state &state = channels[channel];
+        state.have_awaiting_data_ack = false;
+        state.awaiting_data_ack = 0;
         return true;
     }
 
@@ -309,6 +508,7 @@ struct daemon_state
         {
         case opcode::Hello:
             clients.at(id).pid = decoded.pid;
+            clients.at(id).kind = decoded.client;
             return true;
         case opcode::Bye:
             close_client(id);
@@ -320,7 +520,13 @@ struct daemon_state
             unregister_attachment(id, decoded.channel, decoded.mode);
             return true;
         case opcode::Publish:
-            return publish_message(id, decoded.channel, std::move(decoded.payload));
+            return publish_message(id, decoded.channel, decoded.payload);
+        case opcode::ChannelOffer:
+            return handle_channel_offer(id, decoded.channel);
+        case opcode::ChannelRecvReady:
+            return handle_channel_recv_ready(id, decoded.channel);
+        case opcode::ChannelDataAck:
+            return handle_channel_data_ack(id, decoded.channel);
         default:
             return true;
         }
@@ -399,7 +605,7 @@ inline void run_client_thread(daemon_state *state, client_id id)
             }
             if (chunk == 0)
             {
-                continue;
+                continue; // would-block
             }
             state->ingest_bytes(id, buffer, static_cast<size_t>(chunk));
         }
@@ -438,7 +644,11 @@ inline int run_daemon_windows()
             std::lock_guard<std::mutex> guard{state.mutex};
             state.served_clients = true;
             id = state.assign_id(*connection);
-            state.clients.emplace(id, client_state{std::move(*connection)});
+            {
+                client_state state_client;
+                state_client.connection = std::move(*connection);
+                state.clients.emplace(id, std::move(state_client));
+            }
         }
         client_threads.emplace_back(run_client_thread, &state, id);
     }
@@ -524,10 +734,14 @@ inline int run_daemon_posix()
                 std::byte buffer[4096];
                 const ssize_t chunk =
                     found->second.connection.read_some(buffer, sizeof buffer);
-                if (chunk <= 0)
+                if (chunk < 0)
                 {
                     state.close_client(id);
                     continue;
+                }
+                if (chunk == 0)
+                {
+                    continue; // would-block
                 }
                 state.ingest_bytes(id, buffer, static_cast<size_t>(chunk));
             }
@@ -547,7 +761,9 @@ inline int run_daemon_posix()
 
 } // namespace detail
 
-/// Run the pipe hub daemon until every client disconnects.
+/// Run the pipe hub daemon until every attached client disconnects.
+/// Clients may be munx VM processes, natively compiled munx binaries, or
+/// external tools that speak the hub wire protocol.
 inline int run_daemon()
 {
     if (hub_process_alive())

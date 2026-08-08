@@ -332,6 +332,8 @@ private:
         MUNX_OPCODE_NAME(FREE);
         MUNX_OPCODE_NAME(PIPE_INSERT);
         MUNX_OPCODE_NAME(PIPE_EXTRACT);
+        MUNX_OPCODE_NAME(CHANNEL_INSERT);
+        MUNX_OPCODE_NAME(CHANNEL_EXTRACT);
         MUNX_OPCODE_NAME(DEFINE_ENUM);
         MUNX_OPCODE_NAME(DEFINE_OBJECT);
         MUNX_OPCODE_NAME(LOCK_CREATE);
@@ -412,6 +414,8 @@ private:
         case Opcode::FREE:
         case Opcode::PIPE_INSERT:
         case Opcode::PIPE_EXTRACT:
+        case Opcode::CHANNEL_INSERT:
+        case Opcode::CHANNEL_EXTRACT:
         case Opcode::LOCK_CREATE:
         case Opcode::LOCK_ACQUIRE:
         case Opcode::LOCK_RELEASE:

@@ -1,0 +1,38 @@
+package marketfeed_tape
+
+// Consolidated tape logger — market-data subscriber on `market.ticks`.
+// Uses pipe(name, subscribe) so every tick is delivered (fan-out).
+//
+// Start the exchange first:
+//   ./munxc --run sample/marketfeed/exchange.mx
+//   ./munxc --run sample/marketfeed/tape.mx
+//
+// EXPECT is patched by tools/bench_pubsub.sh to match exchange COUNT.
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+FEED = "market.ticks"
+EXPECT = 2000
+
+tape = pipe(FEED, subscribe)
+println("tape:listening")
+
+ticks = 0
+loop {
+    event = <- tape
+    if event == null {
+        fail("tape: hub closed before complete")
+    }
+    text = cast[string](event)
+    if text == "END" {
+        break
+    }
+    ticks = ticks + 1
+    if ticks >= EXPECT {
+        break
+    }
+}
+
+println(concat("tape:received=", cast[string](ticks)))
+println("tape:done")

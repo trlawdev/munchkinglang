@@ -7,6 +7,7 @@
 #include "logger.hpp"
 #include "loop_simd_optimizer.hpp"
 #include "parser.hpp"
+#include "generic_reflexpr.hpp"
 #include "type_checker.hpp"
 #include "vm_value.hpp"
 #include <charconv>
@@ -82,6 +83,7 @@ using vm::debug_loc_entry;
             std::vector<munx::token> tokens = lex.read_tokens();
             parser parse{std::move(tokens), source_path};
             program = parse.parse_program();
+            expand_generics_and_reflexpr(*program);
         });
         if (!compile_error.ok())
         {
@@ -639,6 +641,10 @@ private:
             code_.op(Opcode::POP);
             break;
         }
+        case ast::stmt_type::ReflectFor:
+        case ast::stmt_type::TypeidMatch:
+            codegen_error(stmt.loc, "internal: unexpanded compile-time reflexpr statement");
+            break;
         }
     }
 
@@ -928,6 +934,19 @@ private:
         case ast::expr_type::PipeExtract:
             code_.op(Opcode::PIPE_EXTRACT);
             code_.str(strings_.intern(ast::as<ast::pipe_extract_expr>(expr).pipe_name));
+            break;
+        case ast::expr_type::ChannelInsert:
+        {
+            const auto &insert = ast::as<ast::channel_insert_expr>(expr);
+            emit_expr(*insert.value);
+            code_.op(Opcode::CHANNEL_INSERT);
+            code_.str(strings_.intern(insert.channel_name));
+            break;
+        }
+        case ast::expr_type::ChannelExtract:
+            code_.op(Opcode::CHANNEL_EXTRACT);
+            code_.str(strings_.intern(
+                ast::as<ast::channel_extract_expr>(expr).channel_name));
             break;
         case ast::expr_type::Cast:
         {

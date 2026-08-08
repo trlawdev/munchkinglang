@@ -2,9 +2,12 @@ package pipehub_publisher
 
 // Publish events to subscribers on other munx VM processes.
 //
+// The hub requires a publisher (`pipe(name, out)`) before readers may attach.
+// This process stays alive briefly so subscribers can join and drain the queue.
+//
 //   ./munxc --run sample/pipehub/publisher.mx "hello room"
 //
-// Start one or more subscribers first:
+// Then in another terminal:
 //   ./munxc --run sample/pipehub/subscriber.mx
 
 print = fix(open(io_type::tty, out))
@@ -21,3 +24,7 @@ message = argv[0]
 
 message -> out_pipe
 println(concat("published: ", message))
+
+// Keep the writer attached so late subscribers can open the pipe and receive
+// any still-queued (or freshly published) messages.
+sleep(5000)

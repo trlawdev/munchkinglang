@@ -141,7 +141,27 @@ if [[ "$arch" == "x86_64" || "$arch" == "amd64" ]]; then
     simd=(-mavx2 -mfma)
 fi
 
-echo "Compiling $OUTPUT ($BUILD_TYPE, $CXX [$COMPILER_FAMILY], exceptions disabled)..."
+# Native AOT backends compiled into munxc (custom MIR→C, llvm MIR→IR text).
+MUNX_NATIVE_BACKEND="${MUNX_NATIVE_BACKEND:-custom}"
+native_flags=("-DMUNX_NATIVE_RUNTIME_DIR=\"$root/native/runtime\"")
+case "$MUNX_NATIVE_BACKEND" in
+    custom)
+        native_flags+=(-DMUNX_NATIVE_CUSTOM=1 -DMUNX_NATIVE_LLVM=0)
+        ;;
+    llvm)
+        native_flags+=(-DMUNX_NATIVE_CUSTOM=0 -DMUNX_NATIVE_LLVM=1)
+        ;;
+    both)
+        native_flags+=(-DMUNX_NATIVE_CUSTOM=1 -DMUNX_NATIVE_LLVM=1)
+        ;;
+    *)
+        echo "MUNX_NATIVE_BACKEND must be custom, llvm, or both" >&2
+        exit 1
+        ;;
+esac
+
+echo "Compiling $OUTPUT ($BUILD_TYPE, $CXX [$COMPILER_FAMILY], native=$MUNX_NATIVE_BACKEND, exceptions disabled)..."
 "$CXX" "${common[@]}" "${compiler_flags[@]}" "${warnings[@]}" "${opt[@]}" "${simd[@]}" \
+    "${native_flags[@]}" \
     src/main.cpp -o "$OUTPUT" "${ld[@]}" "${linker_flags[@]}"
 echo "Built ./$OUTPUT"

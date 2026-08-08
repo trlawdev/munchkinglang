@@ -1,0 +1,82 @@
+package marketfeed_exchange
+
+// Real-world pub/sub: a stock-exchange matching engine publishes last-trade
+// ticks on a broadcast pipe. Independent subscribers (tape logger, risk
+// monitor) each receive a full copy — classic fan-out.
+//
+// Topics:
+//   market.ticks  — every print (TICK|… and BLOCK|…)
+//   market.blocks — block trades only (risk topic)
+//
+// Publisher-first: start this before subscribers, then keep it alive briefly.
+//
+//   ./munxc --run sample/marketfeed/exchange.mx
+//   ./munxc --run sample/marketfeed/tape.mx
+//   ./munxc --run sample/marketfeed/risk.mx
+//
+// COUNT / HOLD_MS are patched by tools/bench_pubsub.sh for throughput runs.
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+TICKS = "market.ticks"
+BLOCKS = "market.blocks"
+COUNT = 2000
+HOLD_MS = 3000
+
+ticks_out = pipe(TICKS, out)
+blocks_out = pipe(BLOCKS, out)
+println(concat("exchange:online count=", cast[string](COUNT)))
+
+i = 0
+blocks = 0
+loop {
+    if i >= COUNT {
+        break
+    }
+
+    sym = "AAPL"
+    price = 180 + (i % 7)
+    if (i % 3) == 1 {
+        sym = "MSFT"
+        price = 400 + (i % 5)
+    }
+    if (i % 3) == 2 {
+        sym = "GOOG"
+        price = 140 + (i % 9)
+    }
+
+    qty = 10 + (i % 40)
+    kind = "TICK"
+    if (i % 100) == 0 {
+        kind = "BLOCK"
+        qty = 5000 + (i % 500)
+    }
+
+    // Wire format: KIND|SYM|PRICE|QTY|SEQ
+    msg = concat(kind, "|")
+    msg = concat(msg, sym)
+    msg = concat(msg, "|")
+    msg = concat(msg, cast[string](price))
+    msg = concat(msg, "|")
+    msg = concat(msg, cast[string](qty))
+    msg = concat(msg, "|")
+    msg = concat(msg, cast[string](i))
+
+    msg -> ticks_out
+    if kind == "BLOCK" {
+        msg -> blocks_out
+        blocks = blocks + 1
+    }
+
+    i = i + 1
+}
+
+"END" -> ticks_out
+"END" -> blocks_out
+println(concat("exchange:published=", cast[string](COUNT)))
+println(concat("exchange:blocks=", cast[string](blocks)))
+
+// Hold writers open so late subscribers can attach and drain pending.
+sleep(HOLD_MS)
+println("exchange:offline")

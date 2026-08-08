@@ -241,10 +241,11 @@ namespace munx::ast
         std::unique_ptr<expr_node> operand;  ///< Operand.
     };
 
-    /// Call expression `callee(arguments…)`.
+    /// Call expression `callee(arguments…)` or `callee<T,…>(arguments…)`.
     struct call_expr
     {
         std::unique_ptr<expr_node> callee;                 ///< Callee expression.
+        std::vector<std::unique_ptr<type_node>> type_arguments; ///< Explicit generic args.
         std::vector<std::unique_ptr<expr_node>> arguments; ///< Argument list.
     };
 
@@ -299,6 +300,19 @@ namespace munx::ast
     struct pipe_extract_expr
     {
         std::string pipe_name; ///< Source pipe identifier.
+    };
+
+    /// Channel insert `value :=> channel_name`.
+    struct channel_insert_expr
+    {
+        std::unique_ptr<expr_node> value; ///< Value written into the channel.
+        std::string channel_name;         ///< Destination channel variable.
+    };
+
+    /// Channel extract `<=: channel_name` (blocking read with handshake).
+    struct channel_extract_expr
+    {
+        std::string channel_name; ///< Source channel variable.
     };
 
     /// Cast expression `cast[T](operand)`.
@@ -378,6 +392,8 @@ namespace munx::ast
         TupleLiteral,
         PipeInsert,
         PipeExtract,
+        ChannelInsert,
+        ChannelExtract,
         Cast,
         Alloc,
         Free,
@@ -408,6 +424,8 @@ namespace munx::ast
         tuple_literal,
         pipe_insert_expr,
         pipe_extract_expr,
+        channel_insert_expr,
+        channel_extract_expr,
         cast_expr,
         alloc_expr,
         free_expr,
@@ -538,13 +556,38 @@ namespace munx::ast
         std::vector<match_case> cases;       ///< Case arms (may be empty).
     };
 
-    /// Function declaration.
+    /// Function declaration (`func name` or `func name<T,…>`).
     struct func_decl
     {
         std::string name;                         ///< Function name.
+        std::vector<std::string> type_params;     ///< Generic type parameter names.
         std::vector<parameter> parameters;        ///< Parameters.
         std::unique_ptr<type_node> return_type;   ///< Return type.
         std::unique_ptr<block_stmt> body;         ///< Function body.
+    };
+
+    /// Compile-time `::reflect_for(item of collection) { … }`.
+    struct reflect_for_stmt
+    {
+        std::string item_name;                     ///< Loop variable (field artifact).
+        std::unique_ptr<expr_node> collection;     ///< Typically `::members(...)`.
+        std::unique_ptr<block_stmt> body;          ///< Body unrolled per field.
+    };
+
+    /// One arm of a compile-time `::match` on a typeid.
+    struct typeid_match_case
+    {
+        source_loc loc{};                          ///< Location of `::case` / `::default`.
+        bool is_default{false};                    ///< True for `::default`.
+        std::string type_kind_name;                ///< e.g. `object`, `int` (empty if default).
+        std::unique_ptr<expr_node> body;           ///< `=>` expression (often a call).
+    };
+
+    /// Compile-time `::match scrutinee { ::case typeid(K) => … ::default => … }`.
+    struct typeid_match_stmt
+    {
+        std::unique_ptr<expr_node> scrutinee;       ///< Usually `member.type`.
+        std::vector<typeid_match_case> cases;      ///< Arms (default last if present).
     };
 
     /// Enum declaration.
@@ -631,6 +674,8 @@ namespace munx::ast
         Release,
         LoadPackage,
         Insert,
+        ReflectFor,
+        TypeidMatch,
     };
 
     /// Variant payload for all statement kinds.
@@ -651,7 +696,9 @@ namespace munx::ast
         acquire_stmt,
         release_stmt,
         load_package_stmt,
-        insert_stmt>;
+        insert_stmt,
+        reflect_for_stmt,
+        typeid_match_stmt>;
 
     /// Statement AST node: location + discriminator + payload.
     struct stmt_node

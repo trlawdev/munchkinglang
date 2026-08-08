@@ -8,11 +8,18 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <thread>
 #include <unordered_map>
+
+#if MUNX_PLATFORM_POSIX
+#include <cerrno>
+#include <poll.h>
+#endif
 
 namespace munx::vm::pipe_hub
 {
@@ -78,6 +85,9 @@ class client
     bool waiting_for_ack_{false};
     bool ack_received_{false};
     std::string ack_error_;
+    bool waiting_for_channel_{false};
+    bool channel_reply_received_{false};
+    opcode channel_reply_{opcode::Ack};
 
 public:
     static client &instance()
@@ -100,24 +110,46 @@ public:
         {
             return;
         }
-        std::lock_guard<std::mutex> guard{connection_mutex_};
-        if (connected_)
-        {
-            return;
-        }
-        connect_locked();
-    }
-
-    void disconnect()
-    {
-        std::thread reader;
+        bool start_reader = false;
         {
             std::lock_guard<std::mutex> guard{connection_mutex_};
+            if (connected_)
+            {
+                return;
+            }
+            connect_locked();
             if (!connected_)
             {
                 return;
             }
-            shutdown_ = true;
+            const std::vector<std::byte> frame =
+                encode_hello(munx::platform_process_id(), client_kind::Vm);
+            (void)connection_.write_all(frame);
+            running_ = true;
+            start_reader = true;
+        }
+        if (start_reader)
+        {
+            reader_ = std::thread([this] { reader_loop(); });
+        }
+    }
+
+    void disconnect()
+    {
+        // Trip the reader loop before taking connection_mutex_, so it cannot
+        // sit in poll while disconnect waits on the same mutex.
+        shutdown_ = true;
+        running_ = false;
+        reader_paused_ = false;
+
+        std::thread reader;
+        {
+            std::lock_guard<std::mutex> guard{connection_mutex_};
+            if (!connected_ && !reader_.joinable())
+            {
+                shutdown_ = false;
+                return;
+            }
             if (connection_.valid())
             {
                 const std::vector<std::byte> frame = encode_bye();
@@ -126,18 +158,17 @@ public:
                 connection_.close();
             }
             connected_ = false;
-            running_ = false;
             reader = std::move(reader_);
         }
         {
             std::lock_guard<std::mutex> ack_guard{ack_mutex_};
             ack_ready_.notify_all();
         }
+        close_all_queues();
         if (reader.joinable())
         {
             reader.join();
         }
-        close_all_queues();
         shutdown_ = false;
     }
 
@@ -145,7 +176,8 @@ public:
     {
         ensure_connected();
         if (mode == attachment_mode::QueueIn ||
-            mode == attachment_mode::BroadcastIn)
+            mode == attachment_mode::BroadcastIn ||
+            mode == attachment_mode::ChannelPeer)
         {
             std::lock_guard<std::mutex> guard{queues_mutex_};
             const detail::queue_key key{channel, mode};
@@ -154,15 +186,21 @@ public:
                 queues_.emplace(key, std::make_shared<detail::delivery_queue>());
             }
         }
-        std::lock_guard<std::mutex> guard{connection_mutex_};
-        if (!connected_)
-        {
-            throw_error("pipe hub is not connected");
-        }
+
         const std::vector<std::byte> frame = encode_attach(channel, mode);
-        if (!connection_.write_all(frame))
+        wait_for_hub_reply(frame, "attach");
+
+        if (!ack_error_.empty())
         {
-            throw_error("pipe hub attach failed");
+            // Roll back local delivery queue reservation on rejected Attach.
+            if (mode == attachment_mode::QueueIn ||
+                mode == attachment_mode::BroadcastIn ||
+                mode == attachment_mode::ChannelPeer)
+            {
+                std::lock_guard<std::mutex> guard{queues_mutex_};
+                queues_.erase(detail::queue_key{channel, mode});
+            }
+            throw_error("pipe hub error: " + ack_error_);
         }
     }
 
@@ -178,10 +216,128 @@ public:
             (void)connection_.write_all(frame);
         }
         if (mode == attachment_mode::QueueIn ||
-            mode == attachment_mode::BroadcastIn)
+            mode == attachment_mode::BroadcastIn ||
+            mode == attachment_mode::ChannelPeer)
         {
             std::lock_guard<std::mutex> guard{queues_mutex_};
             queues_.erase(detail::queue_key{channel, mode});
+        }
+    }
+
+    /// Bidirectional channel send: Offer → Accept|Busy, then Publish.
+    /// On Busy (collision), back off 1–10 ms and retry (per language spec).
+    void channel_send(const std::string &channel, std::span<const std::byte> payload)
+    {
+        ensure_connected();
+        thread_local std::mt19937 rng{std::random_device{}()};
+        std::uniform_int_distribution<int> backoff_ms{1, 10};
+        for (int attempt = 0; attempt < 1024; ++attempt)
+        {
+            const opcode reply = wait_for_channel_opcode(
+                encode_channel_op(opcode::ChannelOffer, channel),
+                {opcode::ChannelAccept, opcode::ChannelBusy}, "channel offer");
+            if (reply == opcode::ChannelBusy)
+            {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds{backoff_ms(rng)});
+                continue;
+            }
+            wait_for_hub_reply(encode_publish(channel, payload), "channel send");
+            if (!ack_error_.empty())
+            {
+                throw_error("pipe hub error: " + ack_error_);
+            }
+            return;
+        }
+        throw_error("channel `" + channel +
+                    "` send aborted after too many collisions");
+    }
+
+    /// Bidirectional channel receive — signal ready, then block for Deliver.
+    std::vector<std::byte> channel_recv(const std::string &channel)
+    {
+        ensure_connected();
+        {
+            std::lock_guard<std::mutex> guard{connection_mutex_};
+            if (!connected_)
+            {
+                throw_error("pipe hub is not connected");
+            }
+            (void)connection_.write_all(
+                encode_channel_op(opcode::ChannelRecvReady, channel));
+        }
+
+        const detail::queue_key key{channel, attachment_mode::ChannelPeer};
+        // Pause the background reader so this thread owns inbound frames for the
+        // channel rendezvous (avoids a race where Deliver is decoded on the
+        // reader thread against a different queue instance).
+        auto send_data_ack = [this, &channel]() {
+            std::lock_guard<std::mutex> cguard{connection_mutex_};
+            if (connected_)
+            {
+                (void)connection_.write_all(
+                    encode_channel_op(opcode::ChannelDataAck, channel));
+            }
+        };
+        while (true)
+        {
+            {
+                std::vector<std::byte> queued;
+                bool closed = false;
+                {
+                    std::lock_guard<std::mutex> qguard{queues_mutex_};
+                    auto found = queues_.find(key);
+                    if (found != queues_.end())
+                    {
+                        std::lock_guard<std::mutex> guard{found->second->mutex};
+                        if (!found->second->items.empty())
+                        {
+                            queued = std::move(found->second->items.front());
+                            found->second->items.pop_front();
+                        }
+                        else
+                        {
+                            closed = found->second->closed;
+                        }
+                    }
+                }
+                if (!queued.empty())
+                {
+                    send_data_ack();
+                    return queued;
+                }
+                if (closed)
+                {
+                    return {};
+                }
+            }
+
+            std::lock_guard<std::mutex> guard{connection_mutex_};
+            if (!connected_ || shutdown_)
+            {
+                return {};
+            }
+            reader_paused_ = true;
+            message decoded;
+            if (!connection_.poll_readable(200))
+            {
+                reader_paused_ = false;
+                continue;
+            }
+            if (!read_frame_locked(decoded))
+            {
+                reader_paused_ = false;
+                return {};
+            }
+            if (decoded.kind == opcode::Deliver && decoded.channel == channel)
+            {
+                reader_paused_ = false;
+                (void)connection_.write_all(
+                    encode_channel_op(opcode::ChannelDataAck, channel));
+                return decoded.payload;
+            }
+            handle_message(decoded);
+            reader_paused_ = false;
         }
     }
 
@@ -189,54 +345,11 @@ public:
     {
         ensure_connected();
         const std::vector<std::byte> frame = encode_publish(channel, payload);
-
-        {
-            std::lock_guard<std::mutex> guard{connection_mutex_};
-            if (!connected_)
-            {
-                throw_error("pipe hub is not connected");
-            }
-            reader_paused_ = true;
-            input_.clear();
-            have_header_ = false;
-            frame_size_ = 0;
-
-            {
-                std::lock_guard<std::mutex> ack_guard{ack_mutex_};
-                waiting_for_ack_ = true;
-                ack_received_ = false;
-                ack_error_.clear();
-            }
-
-            if (!connection_.write_all(frame))
-            {
-                reader_paused_ = false;
-                std::lock_guard<std::mutex> ack_guard{ack_mutex_};
-                waiting_for_ack_ = false;
-                throw_error("pipe hub publish failed");
-            }
-            pump_inbound_until_ack_locked();
-            reader_paused_ = false;
-        }
-
-        {
-            std::lock_guard<std::mutex> ack_guard{ack_mutex_};
-            if (!ack_received_ && connected_ && !shutdown_)
-            {
-                waiting_for_ack_ = false;
-                throw_error("pipe hub publish did not receive acknowledgement");
-            }
-        }
-
+        wait_for_hub_reply(frame, "publish");
         if (!ack_error_.empty())
         {
             throw_error("pipe hub error: " + ack_error_);
         }
-        if (!connected_ || shutdown_)
-        {
-            throw_error("pipe hub disconnected during publish");
-        }
-        waiting_for_ack_ = false;
     }
 
     std::vector<std::byte> receive_bytes(const std::string &channel,
@@ -275,14 +388,8 @@ public:
     class session
     {
     public:
-        session()
-        {
-            if (hub_enabled())
-            {
-                client::instance().ensure_connected();
-                client::instance().send_hello();
-            }
-        }
+        /// Lazy: the hub is contacted on first `pipe(...)` / attach, not at VM start.
+        session() = default;
 
         ~session()
         {
@@ -299,6 +406,132 @@ public:
 private:
     client() = default;
 
+    /// Write @p frame then pump this connection until Accept/Busy/Error.
+    /// Safe across processes: the peer's RecvReady uses a different socket.
+    opcode wait_for_channel_opcode(const std::vector<std::byte> &frame,
+                                   std::initializer_list<opcode> expected,
+                                   const char *action)
+    {
+        {
+            std::lock_guard<std::mutex> guard{connection_mutex_};
+            if (!connected_)
+            {
+                throw_error(std::string{"pipe hub is not connected ("} + action +
+                            ")");
+            }
+            reader_paused_ = true;
+            {
+                std::lock_guard<std::mutex> ack_guard{ack_mutex_};
+                waiting_for_channel_ = true;
+                channel_reply_received_ = false;
+                channel_reply_ = opcode::Ack;
+                ack_error_.clear();
+            }
+            if (!connection_.write_all(frame))
+            {
+                reader_paused_ = false;
+                std::lock_guard<std::mutex> ack_guard{ack_mutex_};
+                waiting_for_channel_ = false;
+                throw_error(std::string{"pipe hub "} + action + " failed");
+            }
+            while (true)
+            {
+                {
+                    std::lock_guard<std::mutex> ack_guard{ack_mutex_};
+                    if (channel_reply_received_ || !connected_ || shutdown_ ||
+                        !ack_error_.empty())
+                    {
+                        break;
+                    }
+                }
+                message decoded;
+                if (!read_frame_locked(decoded))
+                {
+                    break;
+                }
+                handle_message(decoded);
+            }
+            reader_paused_ = false;
+        }
+        waiting_for_channel_ = false;
+        if (!ack_error_.empty())
+        {
+            throw_error("pipe hub error: " + ack_error_);
+        }
+        if (!channel_reply_received_)
+        {
+            throw_error(std::string{"pipe hub "} + action +
+                        " did not receive a reply");
+        }
+        bool ok = false;
+        for (opcode expect : expected)
+        {
+            if (channel_reply_ == expect)
+            {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok)
+        {
+            throw_error(std::string{"pipe hub "} + action +
+                        " got unexpected reply");
+        }
+        return channel_reply_;
+    }
+
+    /// Write @p frame then block until the hub replies with Ack or Error.
+    void wait_for_hub_reply(const std::vector<std::byte> &frame,
+                            const char *action)
+    {
+        {
+            std::lock_guard<std::mutex> guard{connection_mutex_};
+            if (!connected_)
+            {
+                throw_error(std::string{"pipe hub is not connected ("} + action +
+                            ")");
+            }
+            reader_paused_ = true;
+            input_.clear();
+            have_header_ = false;
+            frame_size_ = 0;
+
+            {
+                std::lock_guard<std::mutex> ack_guard{ack_mutex_};
+                waiting_for_ack_ = true;
+                ack_received_ = false;
+                ack_error_.clear();
+            }
+
+            if (!connection_.write_all(frame))
+            {
+                reader_paused_ = false;
+                std::lock_guard<std::mutex> ack_guard{ack_mutex_};
+                waiting_for_ack_ = false;
+                throw_error(std::string{"pipe hub "} + action + " failed");
+            }
+            pump_inbound_until_ack_locked();
+            reader_paused_ = false;
+        }
+
+        {
+            std::lock_guard<std::mutex> ack_guard{ack_mutex_};
+            if (!ack_received_ && connected_ && !shutdown_)
+            {
+                waiting_for_ack_ = false;
+                throw_error(std::string{"pipe hub "} + action +
+                            " did not receive acknowledgement");
+            }
+        }
+
+        if (!connected_ || shutdown_)
+        {
+            waiting_for_ack_ = false;
+            throw_error(std::string{"pipe hub disconnected during "} + action);
+        }
+        waiting_for_ack_ = false;
+    }
+
     void send_hello()
     {
         std::lock_guard<std::mutex> guard{connection_mutex_};
@@ -307,7 +540,7 @@ private:
             return;
         }
         const std::vector<std::byte> frame =
-            encode_hello(munx::platform_process_id());
+            encode_hello(munx::platform_process_id(), client_kind::Vm);
         (void)connection_.write_all(frame);
     }
 
@@ -320,7 +553,6 @@ private:
         {
             if (try_connect_locked())
             {
-                start_reader_locked();
                 return;
             }
             if (hub_process_alive())
@@ -334,7 +566,6 @@ private:
         {
             if (try_connect_locked())
             {
-                start_reader_locked();
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
@@ -348,8 +579,7 @@ private:
                 {
                     if (try_connect_locked())
                     {
-                        start_reader_locked();
-                        return;
+                                                return;
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(25));
                 }
@@ -358,7 +588,6 @@ private:
 
             if (try_connect_locked())
             {
-                start_reader_locked();
                 return;
             }
 
@@ -366,8 +595,7 @@ private:
             {
                 if (try_connect_locked())
                 {
-                    start_reader_locked();
-                    return;
+                                        return;
                 }
                 if (hub_process_alive())
                 {
@@ -389,7 +617,6 @@ private:
         {
             if (try_connect_locked())
             {
-                start_reader_locked();
                 return;
             }
             if (hub_process_alive())
@@ -398,8 +625,7 @@ private:
                 {
                     if (try_connect_locked())
                     {
-                        start_reader_locked();
-                        return;
+                                                return;
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(25));
                 }
@@ -430,7 +656,7 @@ private:
 
     void reader_loop()
     {
-        while (running_)
+        while (running_ && !shutdown_)
         {
             if (reader_paused_)
             {
@@ -438,23 +664,73 @@ private:
                 continue;
             }
 
+            // Poll without holding connection_mutex_. Holding the mutex across
+            // poll starved publish/attach/disconnect (futex wait vs do_poll).
+#if MUNX_PLATFORM_POSIX
+            int fd = -1;
+            {
+                std::lock_guard<std::mutex> guard{connection_mutex_};
+                if (!connection_.valid() || shutdown_)
+                {
+                    break;
+                }
+                fd = connection_.native_fd();
+            }
+            pollfd descriptor{fd, POLLIN, 0};
+            const int ready = ::poll(&descriptor, 1, 100);
+            if (shutdown_ || !running_)
+            {
+                break;
+            }
+            if (ready < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                break;
+            }
+            if (ready == 0)
+            {
+                continue;
+            }
+#else
+            {
+                std::lock_guard<std::mutex> guard{connection_mutex_};
+                if (!connection_.valid() || shutdown_)
+                {
+                    break;
+                }
+                if (!connection_.poll_readable(100))
+                {
+                    continue;
+                }
+            }
+#endif
+
             std::byte buffer[4096];
             ssize_t chunk = 0;
             std::vector<message> messages;
             {
                 std::lock_guard<std::mutex> guard{connection_mutex_};
-                if (!connection_.valid())
-                {
-                    break;
-                }
-                if (!connection_.poll_readable(200))
+                if (reader_paused_ || !connection_.valid() || shutdown_)
                 {
                     continue;
                 }
-                chunk = connection_.read_some(buffer, sizeof buffer);
-                if (chunk <= 0)
+#if MUNX_PLATFORM_POSIX
+                if (connection_.native_fd() != fd)
                 {
-                    break;
+                    continue;
+                }
+#endif
+                chunk = connection_.read_some(buffer, sizeof buffer);
+                if (chunk < 0)
+                {
+                    break; // EOF or hard error
+                }
+                if (chunk == 0)
+                {
+                    continue; // would-block / EINTR
                 }
                 input_.insert(input_.end(), buffer, buffer + chunk);
                 while (true)
@@ -493,8 +769,11 @@ private:
             {
                 return std::nullopt;
             }
-            std::memcpy(&frame_size_, input_.data(), sizeof frame_size_);
-            input_.erase(input_.begin(), input_.begin() + sizeof(uint32_t));
+            // Frame length is a wire uint32; do not memcpy sizeof(size_t).
+            uint32_t length = 0;
+            std::memcpy(&length, input_.data(), sizeof length);
+            frame_size_ = length;
+            input_.erase(input_.begin(), input_.begin() + sizeof length);
             have_header_ = true;
         }
         if (input_.size() < frame_size_)
@@ -546,12 +825,38 @@ private:
         size_t received = 0;
         while (received < length)
         {
+            if (shutdown_ || !connection_.valid() || !connected_)
+            {
+                return false;
+            }
+            // When pumping for Ack, wake periodically so a reader-delivered
+            // Ack (or Error) can abort a blocking read.
+            if (waiting_for_ack_)
+            {
+                std::lock_guard<std::mutex> ack_guard{ack_mutex_};
+                if (ack_received_ || !ack_error_.empty())
+                {
+                    return false;
+                }
+            }
+            if (!connection_.poll_readable(waiting_for_ack_ ? 50 : 500))
+            {
+                if (shutdown_ || !connected_)
+                {
+                    return false;
+                }
+                continue;
+            }
             const ssize_t chunk =
                 connection_.read_some(bytes + received, length - received);
-            if (chunk <= 0)
+            if (chunk < 0)
             {
                 connected_ = false;
                 return false;
+            }
+            if (chunk == 0)
+            {
+                continue; // would-block; poll again
             }
             received += static_cast<size_t>(chunk);
         }
@@ -605,8 +910,7 @@ private:
         }
         if (chunk == 0)
         {
-            connected_ = false;
-            return false;
+            return true; // would-block; caller may retry
         }
 
         input_.insert(input_.end(), buffer, buffer + chunk);
@@ -635,16 +939,29 @@ private:
             ack_ready_.notify_all();
             return;
         }
-        if (decoded.kind == opcode::Error)
+        if (decoded.kind == opcode::ChannelAccept ||
+            decoded.kind == opcode::ChannelBusy)
         {
             std::lock_guard<std::mutex> guard{ack_mutex_};
-            if (!waiting_for_ack_)
+            if (!waiting_for_channel_)
             {
                 return;
             }
-            ack_received_ = true;
-            ack_error_ = decoded.text;
+            channel_reply_ = decoded.kind;
+            channel_reply_received_ = true;
             ack_ready_.notify_all();
+            return;
+        }
+        if (decoded.kind == opcode::Error)
+        {
+            std::lock_guard<std::mutex> guard{ack_mutex_};
+            if (waiting_for_ack_ || waiting_for_channel_)
+            {
+                ack_received_ = true;
+                channel_reply_received_ = true;
+                ack_error_ = decoded.text;
+                ack_ready_.notify_all();
+            }
             return;
         }
         if (decoded.kind != opcode::Deliver)
@@ -659,8 +976,24 @@ private:
             auto found = queues_.find(key);
             if (found == queues_.end())
             {
-                target = std::make_shared<detail::delivery_queue>();
-                queues_.emplace(key, target);
+                // Prefer an existing queue for this channel under any inbound mode
+                // (defensive: mode mismatch should not drop payloads).
+                for (auto &[existing_key, existing_queue] : queues_)
+                {
+                    if (existing_key.channel == decoded.channel &&
+                        (existing_key.mode == attachment_mode::QueueIn ||
+                         existing_key.mode == attachment_mode::BroadcastIn ||
+                         existing_key.mode == attachment_mode::ChannelPeer))
+                    {
+                        target = existing_queue;
+                        break;
+                    }
+                }
+                if (!target)
+                {
+                    target = std::make_shared<detail::delivery_queue>();
+                    queues_.emplace(key, target);
+                }
             }
             else
             {

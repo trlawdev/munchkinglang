@@ -333,7 +333,7 @@ namespace munx
         /// Parse a full expression (entry point for expression grammar).
         std::unique_ptr<ast::expr_node> parse_expression() { return parse_pipe(); }
 
-        /// Parse pipe-insert expressions (`value -> name`).
+        /// Parse pipe/channel-insert expressions (`value -> name`, `value :=> name`).
         std::unique_ptr<ast::expr_node> parse_pipe()
         {
             auto left = parse_or();
@@ -342,6 +342,12 @@ namespace munx
                 const auto loc = left->loc;
                 return ast::make_expr_ptr(
                     ast::pipe_insert_expr{std::move(left), expect_name()}, loc);
+            }
+            if (match(token_type::CHANNEL_INSERT))
+            {
+                const auto loc = left->loc;
+                return ast::make_expr_ptr(
+                    ast::channel_insert_expr{std::move(left), expect_name()}, loc);
             }
             return left;
         }
@@ -468,13 +474,19 @@ namespace munx
             return left;
         }
 
-        /// Parse unary `!` / `~` / `-` / pipe-extract.
+        /// Parse unary `!` / `~` / `-` / pipe-extract / channel-extract.
         std::unique_ptr<ast::expr_node> parse_unary()
         {
             if (match(token_type::PIPE_EXTRACT))
             {
                 const auto loc = loc_of(prev());
                 return ast::make_expr_ptr(ast::pipe_extract_expr{expect_name()}, loc);
+            }
+            if (match(token_type::CHANNEL_EXTRACT))
+            {
+                const auto loc = loc_of(prev());
+                return ast::make_expr_ptr(
+                    ast::channel_extract_expr{expect_name()}, loc);
             }
             if (match(token_type::BANG))
             {
@@ -505,6 +517,31 @@ namespace munx
                     const auto loc = expr->loc;
                     expr = ast::make_expr_ptr(
                         ast::member_expr{std::move(expr), expect_name()}, loc);
+                }
+                else if (check(token_type::LT) && looks_like_call_type_args())
+                {
+                    const auto loc = expr->loc;
+                    advance(); // `<`
+                    ast::call_expr call;
+                    call.callee = std::move(expr);
+                    if (!check(token_type::GT))
+                    {
+                        do
+                        {
+                            call.type_arguments.push_back(parse_type());
+                        } while (match(token_type::COMMA));
+                    }
+                    expect(token_type::GT, "expected `>` after type arguments");
+                    expect(token_type::LPAREN, "expected `(` after type arguments");
+                    if (!check(token_type::RPAREN))
+                    {
+                        do
+                        {
+                            call.arguments.push_back(parse_expression());
+                        } while (match(token_type::COMMA));
+                    }
+                    expect(token_type::RPAREN, "expected `)` after arguments");
+                    expr = ast::make_expr_ptr(std::move(call), loc);
                 }
                 else if (match(token_type::LPAREN))
                 {
@@ -639,6 +676,11 @@ namespace munx
             if (check_kw("map"))
             {
                 return parse_map_literal();
+            }
+
+            if (check(token_type::SCOPE))
+            {
+                return parse_compiler_call_expr();
             }
 
             if (check_name())
@@ -844,6 +886,10 @@ namespace munx
                            "before any other statement");
             }
 
+            if (check(token_type::SCOPE))
+            {
+                return parse_compiler_stmt();
+            }
             if (check_kw("func"))
             {
                 const auto loc = here();
@@ -1158,6 +1204,17 @@ namespace munx
         {
             ast::func_decl func;
             func.name = expect_name();
+            if (match(token_type::LT))
+            {
+                if (!check(token_type::GT))
+                {
+                    do
+                    {
+                        func.type_params.push_back(expect_name());
+                    } while (match(token_type::COMMA));
+                }
+                expect(token_type::GT, "expected `>` after type parameters");
+            }
             expect(token_type::LPAREN, "expected `(` after function name");
             func.parameters = parse_params();
             expect(token_type::RPAREN, "expected `)` after parameters");
@@ -1277,6 +1334,122 @@ namespace munx
             expect(token_type::RPAREN, "expected `)` after trap parameter");
             monitor.handler = parse_block();
             return ast::make_stmt_ptr(std::move(monitor), loc);
+        }
+
+        /// True when `<…>(` looks like generic call type arguments (not `a < b`).
+        bool looks_like_call_type_args() const
+        {
+            if (!check(token_type::LT))
+            {
+                return false;
+            }
+            std::size_t i = token_pos_ + 1;
+            int depth = 1;
+            while (i < tokens_.size() && depth > 0)
+            {
+                const token_type t = tokens_[i].type;
+                if (t == token_type::LT)
+                {
+                    ++depth;
+                }
+                else if (t == token_type::GT)
+                {
+                    --depth;
+                    if (depth == 0)
+                    {
+                        return i + 1 < tokens_.size() &&
+                               tokens_[i + 1].type == token_type::LPAREN;
+                    }
+                }
+                else if (t == token_type::END || t == token_type::SEMICOLON)
+                {
+                    return false;
+                }
+                ++i;
+            }
+            return false;
+        }
+
+        /// `::reflexpr(…)` / `::members(…)` as a call with callee name `::name`.
+        std::unique_ptr<ast::expr_node> parse_compiler_call_expr()
+        {
+            const auto loc = here();
+            expect(token_type::SCOPE, "expected `::`");
+            if (!check_kw("reflexpr") && !check_kw("members") &&
+                !check_kw("meta_params") && !check_kw("params") &&
+                !check_kw("construct"))
+            {
+                error_here(
+                    "expected `reflexpr`, `members`, `meta_params`, `params`, or "
+                    "`construct` after `::`");
+            }
+            const std::string name = "::" + text(advance());
+            expect(token_type::LPAREN, "expected `(` after compiler form");
+            ast::call_expr call;
+            call.callee = ast::make_expr_ptr(ast::identifier{name}, loc);
+            if (!check(token_type::RPAREN))
+            {
+                do
+                {
+                    call.arguments.push_back(parse_expression());
+                } while (match(token_type::COMMA));
+            }
+            expect(token_type::RPAREN, "expected `)` after compiler form");
+            return ast::make_expr_ptr(std::move(call), loc);
+        }
+
+        /// Statement-level `::reflect_for` / `::match`.
+        std::unique_ptr<ast::stmt_node> parse_compiler_stmt()
+        {
+            const auto loc = here();
+            expect(token_type::SCOPE, "expected `::`");
+            if (match_kw("reflect_for"))
+            {
+                expect(token_type::LPAREN, "expected `(` after `::reflect_for`");
+                ast::reflect_for_stmt stmt;
+                stmt.item_name = expect_name();
+                expect_kw("of");
+                stmt.collection = parse_expression();
+                expect(token_type::RPAREN, "expected `)` after reflect_for header");
+                stmt.body = parse_block();
+                return ast::make_stmt_ptr(std::move(stmt), loc);
+            }
+            if (match_kw("match"))
+            {
+                ast::typeid_match_stmt stmt;
+                stmt.scrutinee = parse_expression();
+                expect(token_type::LBRACE, "expected `{` after `::match`");
+                while (!check(token_type::RBRACE) && !at_end())
+                {
+                    expect(token_type::SCOPE, "expected `::case` or `::default`");
+                    ast::typeid_match_case arm;
+                    arm.loc = loc_of(prev());
+                    if (match_kw("default"))
+                    {
+                        arm.is_default = true;
+                    }
+                    else
+                    {
+                        expect_kw("case");
+                        expect_kw("typeid");
+                        expect(token_type::LPAREN, "expected `(` after `typeid`");
+                        arm.type_kind_name = expect_name();
+                        expect(token_type::RPAREN, "expected `)` after typeid");
+                    }
+                    expect(token_type::ARROW, "expected `=>` in typeid match arm");
+                    arm.body = parse_expression();
+                    stmt.cases.push_back(std::move(arm));
+                    match(token_type::SEMICOLON);
+                    if (arm.is_default)
+                    {
+                        break;
+                    }
+                }
+                expect(token_type::RBRACE, "expected `}` after `::match`");
+                return ast::make_stmt_ptr(std::move(stmt), loc);
+            }
+            error_here("expected `reflect_for` or `match` after `::`");
+            return ast::make_stmt_ptr(ast::break_stmt{}, loc);
         }
     };
 

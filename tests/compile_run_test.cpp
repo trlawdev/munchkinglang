@@ -10,7 +10,9 @@ namespace
 {
 
 using munx::test::compile_source;
+using munx::test::native_compile;
 using munx::test::process_result;
+using munx::test::run_native;
 using munx::test::run_source;
 using munx::test::run_source_interp;
 using munx::test::source_root;
@@ -157,5 +159,53 @@ TEST(CompileRun, BranchBenchmarksProduceStableOutput)
         const auto result = run_source(sample_bench("branch_random.mx"));
         expect_success(result, "branch_random.mx");
         expect_stdout_contains(result, "hits=500000");
+    }
+}
+
+TEST(NativeCompile, CustomBackendSmokePrograms)
+{
+    const auto tmp = std::filesystem::temp_directory_path() / "munx_gtest_native";
+    std::error_code ec;
+    std::filesystem::create_directories(tmp, ec);
+
+    struct case_t
+    {
+        const char *source;
+        const char *exe;
+        std::string needle;
+        std::vector<std::string> args;
+    };
+    const case_t cases[] = {
+        {"hello.mx", "hello", "hello", {}},
+        {"arithmetic.mx", "arithmetic", "a=7", {}},
+        {"loops.mx", "loops", "sum=4950", {}},
+        {"functions.mx", "functions", "add=7", {}},
+        {"if_else.mx", "if_else", "result=1", {}},
+        {"argv_echo.mx", "argv_echo", "arg0=alpha", {"alpha"}},
+    };
+
+    for (const case_t &c : cases)
+    {
+        const auto out = tmp / c.exe;
+        const auto compiled = native_compile(program_path(c.source), out);
+        expect_success(compiled, c.source);
+        expect_stdout_contains(compiled, "wrote ");
+        const auto ran = run_native(out, c.args);
+        expect_success(ran, c.exe);
+        expect_stdout_contains(ran, c.needle);
+    }
+}
+
+TEST(NativeCompile, PipehubPublisherAndSubscriberCompile)
+{
+    const auto tmp = std::filesystem::temp_directory_path() / "munx_gtest_native";
+    std::error_code ec;
+    std::filesystem::create_directories(tmp, ec);
+    for (const char *name : {"publisher.mx", "subscriber.mx", "queue_reader.mx"})
+    {
+        const auto src = source_root() / "sample" / "pipehub" / name;
+        const auto out = tmp / (std::string(name) + ".bin");
+        const auto compiled = native_compile(src, out);
+        expect_success(compiled, name);
     }
 }

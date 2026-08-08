@@ -149,4 +149,81 @@ inline process_result run_source_interp(const std::filesystem::path &source)
     return run_process({munxc_path().string(), "--run", "--interp", source.string()});
 }
 
+/// Compile @p source to a native host executable at @p output via `--native`.
+inline process_result native_compile(const std::filesystem::path &source,
+                                     const std::filesystem::path &output,
+                                     const std::string &backend = {})
+{
+    std::vector<std::string> args{munxc_path().string(), "--native", "-o",
+                                  output.string()};
+    if (!backend.empty())
+    {
+        args.push_back("--backend");
+        args.push_back(backend);
+    }
+    args.push_back(source.string());
+    return run_process(args);
+}
+
+/// Run a previously built native executable (not under MUNX_PIPE_HUB=0).
+inline process_result run_native(const std::filesystem::path &exe,
+                                 const std::vector<std::string> &program_args = {})
+{
+    std::vector<std::string> args{exe.string()};
+    args.insert(args.end(), program_args.begin(), program_args.end());
+    process_result result;
+    std::ostringstream command;
+    for (size_t i = 0; i < args.size(); ++i)
+    {
+        if (i != 0)
+        {
+            command << ' ';
+        }
+        command << shell_quote(args[i]);
+    }
+    const auto stderr_path =
+        std::filesystem::temp_directory_path() / "munx_native_test_stderr.txt";
+    command << " 2>" << shell_quote(stderr_path.string());
+    FILE *pipe = popen(command.str().c_str(), "r");
+    if (pipe == nullptr)
+    {
+        result.stderr_text = "popen failed";
+        return result;
+    }
+    std::array<char, 4096> buffer{};
+    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) !=
+           nullptr)
+    {
+        result.stdout_text += buffer.data();
+    }
+    const int status = pclose(pipe);
+    if (WIFEXITED(status))
+    {
+        result.exit_code = WEXITSTATUS(status);
+    }
+    else if (WIFSIGNALED(status))
+    {
+        result.exit_code = 128 + WTERMSIG(status);
+    }
+    else
+    {
+        result.exit_code = status;
+    }
+    if (std::filesystem::exists(stderr_path))
+    {
+        if (FILE *err = std::fopen(stderr_path.c_str(), "r"))
+        {
+            while (std::fgets(buffer.data(), static_cast<int>(buffer.size()),
+                              err) != nullptr)
+            {
+                result.stderr_text += buffer.data();
+            }
+            std::fclose(err);
+        }
+        std::error_code ec;
+        std::filesystem::remove(stderr_path, ec);
+    }
+    return result;
+}
+
 } // namespace munx::test

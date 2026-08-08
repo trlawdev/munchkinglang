@@ -479,10 +479,14 @@ private:
         declare("thread", {any(), any()}, any(), true);
         declare("join", {any()}, void_ret(), true);
         declare("pipe", {str_ret(), any()}, any(), true);
+        declare("channel", {str_ret()}, any());
         declare("sleep", {int_ret()}, void_ret());
         declare("get", {any(), any()}, any());
         declare("insert", {any(), any()}, void_ret());
         declare("env", {str_ret()}, any());
+        declare("parse_json", {str_ret()}, any());
+        declare("json_field", {any(), str_ret()}, any(), true);
+        declare("json_require", {any(), str_ret()}, any(), true);
     }
 
     static void fail(const ast::source_loc &loc, const std::string &message)
@@ -856,6 +860,10 @@ private:
             break;
         case ast::stmt_type::Insert:
             check_insert(ast::as_stmt<ast::insert_stmt>(stmt), stmt.loc);
+            break;
+        case ast::stmt_type::ReflectFor:
+        case ast::stmt_type::TypeidMatch:
+            fail(stmt.loc, "internal: unexpanded compile-time reflexpr statement");
             break;
         }
     }
@@ -1606,6 +1614,14 @@ private:
             return resolved_type::unknown();
         }
         case ast::expr_type::PipeExtract:
+            return resolved_type::unknown();
+        case ast::expr_type::ChannelInsert:
+        {
+            const auto &ch = ast::as<ast::channel_insert_expr>(expr);
+            (void)check_expr(*ch.value);
+            return resolved_type::unknown();
+        }
+        case ast::expr_type::ChannelExtract:
             return resolved_type::unknown();
         case ast::expr_type::Cast:
         {

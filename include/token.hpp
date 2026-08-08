@@ -57,11 +57,15 @@ namespace munx
         AND_AND,      ///< `&&`
         OR_OR,        ///< `||`
         ARROW,        ///< `=>` (lambda body)
-        PIPE_INSERT,  ///< `->` (pipe write)
-        PIPE_EXTRACT, ///< `<-` (pipe read)
+        PIPE_INSERT,     ///< `->` (pipe write)
+        PIPE_EXTRACT,    ///< `<-` (pipe read)
+        CHANNEL_INSERT,  ///< `:=>` (channel write)
+        CHANNEL_EXTRACT, ///< `<=:` (channel read)
 
         END, ///< Sentinel end-of-input token.
     };
+
+    using value_variant = std::variant<char, long long, long double, std::string>;
 
     /// A single lexeme with 1-based source coordinates and a typed payload.
     struct token
@@ -70,7 +74,7 @@ namespace munx
         long long column; ///< 1-based column of the token start.
         token_type type;  ///< Token kind.
         /// Payload: integer, float, or string (lexeme / decoded literal text).
-        std::variant<long long, long double, std::string> value;
+        value_variant value;
     };
 
 } // namespace munx

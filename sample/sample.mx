@@ -95,3 +95,10 @@ value = get(hmap, "Male") // get is a keyword, will return a lambda
 null_value = get(hmap, "Test")("Test") // will throw since the callable lambda returned is null because "Test does not exist",
     insert(hmap, {"Test" : lambda (s: string): int => {return s.len * 1000} })// inserts into the map hmap
 
+ch = channel("channel_id") // channel is a keyword, a bidirectional bimodal pipe that allows exactly two processes to communicate bidirectionally, before one sends data, it sends a request to
+//the other processes to acknowledge that it was to send data unto the channel, the sending process, then sends a payload after acknowledgement, the other process awaits a data payload, 
+//after reiciept it acknowledges. if both try to send data at the same time causing a collision, they should rollback and wait a random amount of milliseconds between 1 - 10, after which the first that wakes
+//up sends their data.
+
+"Hello" :=> ch // channel insert operator
+value = <=: ch // channel extraction operator

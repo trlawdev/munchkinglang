@@ -44,6 +44,16 @@ namespace munx
             "get",
             "insert",
             "env",
+            "channel",
+            "reflexpr",
+            "members",
+            "meta_params",
+            "params",
+            "reflect_for",
+            "construct",
+            "typeid",
+            "default",
+            "of",
         };
         return k;
     }

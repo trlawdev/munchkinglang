@@ -549,6 +549,27 @@ inline void compile_handlers(compiled_unit &unit, virtual_machine &,
             });
             break;
         }
+        case Opcode::CHANNEL_INSERT:
+        {
+            const std::string name = cursor.read_name();
+            bind([name](virtual_machine &machine, frame &current, size_t) {
+                current.pc += 1 + 8;
+                value item = virtual_machine::jit_pop(current);
+                machine.jit_channel_insert(current, name, item);
+                current.stack.push_back(value{});
+            });
+            break;
+        }
+        case Opcode::CHANNEL_EXTRACT:
+        {
+            const std::string name = cursor.read_name();
+            bind([name](virtual_machine &machine, frame &current, size_t) {
+                current.pc += 1 + 8;
+                current.stack.push_back(
+                    machine.jit_channel_extract(current, name));
+            });
+            break;
+        }
         case Opcode::DEFINE_ENUM:
         {
             const std::string name = cursor.read_name();

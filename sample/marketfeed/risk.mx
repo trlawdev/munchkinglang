@@ -1,0 +1,37 @@
+package marketfeed_risk
+
+// Risk / compliance monitor — subscribes only to the block-trade topic.
+// In a real desk this feed drives position limits and surveillance alerts;
+// here we count block prints and acknowledge the stream end.
+//
+// Start the exchange first:
+//   ./munxc --run sample/marketfeed/exchange.mx
+//   ./munxc --run sample/marketfeed/risk.mx
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+FEED = "market.blocks"
+
+alerts = pipe(FEED, subscribe)
+println("risk:listening")
+
+blocks = 0
+loop {
+    event = <- alerts
+    if event == null {
+        fail("risk: hub closed before END")
+    }
+    text = cast[string](event)
+    if text == "END" {
+        break
+    }
+    blocks = blocks + 1
+    // Surface the first few alerts for the interactive demo.
+    if blocks <= 3 {
+        println(concat("risk:alert ", text))
+    }
+}
+
+println(concat("risk:blocks=", cast[string](blocks)))
+println("risk:done")

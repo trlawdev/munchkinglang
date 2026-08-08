@@ -359,6 +359,22 @@ namespace munx
                 write_line("(pipe-extract %s%s)",
                            ast::as<ast::pipe_extract_expr>(expr).pipe_name.c_str(), loc.c_str());
                 break;
+            case ast::expr_type::ChannelInsert:
+            {
+                const auto &channel_insert = ast::as<ast::channel_insert_expr>(expr);
+                write_line("(channel-insert %s%s", channel_insert.channel_name.c_str(),
+                           loc.c_str());
+                indent();
+                print_expr(*channel_insert.value);
+                dedent();
+                write_line(")");
+                break;
+            }
+            case ast::expr_type::ChannelExtract:
+                write_line("(channel-extract %s%s)",
+                           ast::as<ast::channel_extract_expr>(expr).channel_name.c_str(),
+                           loc.c_str());
+                break;
             case ast::expr_type::Cast:
             {
                 const auto &cast = ast::as<ast::cast_expr>(expr);
@@ -690,6 +706,46 @@ namespace munx
                 indent();
                 print_expr(*insert.map_expr);
                 print_expr(*insert.entries);
+                dedent();
+                write_line(")");
+                break;
+            }
+            case ast::stmt_type::ReflectFor:
+            {
+                const auto &rf = ast::as_stmt<ast::reflect_for_stmt>(stmt);
+                write_line("(reflect-for %s%s", rf.item_name.c_str(), loc.c_str());
+                indent();
+                print_expr(*rf.collection);
+                print_block(*rf.body);
+                dedent();
+                write_line(")");
+                break;
+            }
+            case ast::stmt_type::TypeidMatch:
+            {
+                const auto &tm = ast::as_stmt<ast::typeid_match_stmt>(stmt);
+                write_line("(typeid-match%s", loc.c_str());
+                indent();
+                print_expr(*tm.scrutinee);
+                for (const auto &arm : tm.cases)
+                {
+                    if (arm.is_default)
+                    {
+                        write_line("(default%s", at(arm.loc).c_str());
+                    }
+                    else
+                    {
+                        write_line("(case typeid(%s)%s", arm.type_kind_name.c_str(),
+                                   at(arm.loc).c_str());
+                    }
+                    indent();
+                    if (arm.body)
+                    {
+                        print_expr(*arm.body);
+                    }
+                    dedent();
+                    write_line(")");
+                }
                 dedent();
                 write_line(")");
                 break;

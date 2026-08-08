@@ -1,0 +1,83 @@
+package csv_decode
+
+// String → object decode in Munx via reflection.
+// Input is a CSV row in object field declaration order. Nested objects are
+// nested CSV cells (optionally wrapped in `{...}`).
+
+object Detail {
+    some_info: string
+}
+
+object Person {
+    name: string,
+    age: int,
+    height: float,
+    active: bool,
+    detail: Detail
+}
+
+// Naive CSV split (no escaped commas).
+func parse_csv(s: string): [string] {
+    parts = split(s, ",")
+    out = queue()
+    i = 0
+    loop i < parts.len {
+        append(out, trim(parts[i]))
+        i = i + 1
+    }
+    return out
+}
+
+// Strip optional `{...}` wrapper used for nested object cells.
+func unwrap_cell(s: string): string {
+    t = trim(s)
+    if has_substring_regex(t, r"^\{.*\}$") {
+        // Drop the first and last character via split on the braces.
+        inner = split(t, "{")
+        if inner.len < 2 {
+            return t
+        }
+        body = split(inner[1], "}")
+        return trim(body[0])
+    }
+    return t
+}
+
+func from_csv<T>(cells: [string]): T {
+    art = ::reflexpr(T)
+    members = ::members(art)
+    args = queue()
+    i = 0
+    ::reflect_for(member of members) {
+        if i >= cells.len {
+            fail(concat("csv missing field `", member.name, "`"))
+        }
+        raw = cells[i]
+        ::match member.type {
+            ::case typeid(string) => append(args, raw)
+            ::case typeid(int) => append(args, cast[int](raw))
+            ::case typeid(float) => append(args, cast[float](raw))
+            ::case typeid(bool) => append(args, cast[bool](raw))
+            ::case typeid(object) => append(args, from_csv(parse_csv(unwrap_cell(raw))))
+            ::default => fail("unsupported csv field type")
+        }
+        i = i + 1
+    }
+    return ::construct(T, args)
+}
+
+func decode_csv<T>(s: string): T {
+    return from_csv<T>(parse_csv(s))
+}
+
+row = "Ada,36,1.68,true,{ok}"
+p = decode_csv<Person>(row)
+println("name=", p.name, " age=", p.age, " height=", p.height, " active=", p.active)
+println("detail=", p.detail.some_info)
+
+monitor {
+    bad = decode_csv<Person>("bad,nope,1.0,false,{x}")
+    println("should not reach ", bad.name)
+} trap(err: exception) {
+    println("caught: ", err.message)
+}

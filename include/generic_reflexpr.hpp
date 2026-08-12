@@ -1267,6 +1267,63 @@ private:
                 stmt.loc));
             return;
         }
+        if (stmt.type == ast::stmt_type::FuncDecl)
+        {
+            const auto &fn = ast::as_stmt<ast::func_decl>(stmt);
+            // Nested non-generic funcs (e.g. inside loop/monitor bodies).
+            if (!fn.type_params.empty())
+            {
+                fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
+                             ": error: nested generic functions are not supported");
+                return;
+            }
+            ast::func_decl copy;
+            copy.name = fn.name;
+            for (const auto &param : fn.parameters)
+            {
+                ast::parameter p;
+                p.loc = param.loc;
+                p.name = param.name;
+                p.type = clone_type(*param.type);
+                copy.parameters.push_back(std::move(p));
+            }
+            copy.return_type = clone_type(*fn.return_type);
+            copy.body = std::make_unique<ast::block_stmt>();
+            copy.body->loc = fn.body->loc;
+            lower_block(*fn.body, env, bind, *copy.body, loc);
+            dst.statements.push_back(ast::make_stmt_ptr(std::move(copy), stmt.loc));
+            return;
+        }
+        if (stmt.type == ast::stmt_type::EnumDecl)
+        {
+            const auto &decl = ast::as_stmt<ast::enum_decl>(stmt);
+            dst.statements.push_back(ast::make_stmt_ptr(
+                ast::enum_decl{decl.name, decl.members}, stmt.loc));
+            return;
+        }
+        if (stmt.type == ast::stmt_type::ObjectDecl)
+        {
+            const auto &decl = ast::as_stmt<ast::object_decl>(stmt);
+            ast::object_decl copy;
+            copy.name = decl.name;
+            for (const auto &field : decl.fields)
+            {
+                ast::object_field f;
+                f.loc = field.loc;
+                f.name = field.name;
+                f.type = clone_type(*field.type);
+                copy.fields.push_back(std::move(f));
+            }
+            dst.statements.push_back(ast::make_stmt_ptr(std::move(copy), stmt.loc));
+            return;
+        }
+        if (stmt.type == ast::stmt_type::Lock)
+        {
+            dst.statements.push_back(ast::make_stmt_ptr(
+                ast::lock_stmt{ast::as_stmt<ast::lock_stmt>(stmt).lock_name},
+                stmt.loc));
+            return;
+        }
         fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
                      ": error: unsupported statement inside generic/reflexpr body");
     }

@@ -1164,7 +1164,7 @@ private:
                 throw_error(std::string{"parse_json: "} + parsed.message);
                 return value{};
             }
-            return parsed.value;
+            return parsed.payload;
         });
         define_builtin("json_field", [](virtual_machine &, value_vector &arguments) {
             expect_arity(arguments, 2, 3, "json_field");

@@ -21,7 +21,8 @@ struct parse_result
 {
     bool ok{true};
     std::string message;
-    value value{};
+    /// Parsed Munx value (named `payload` so it does not shadow `munx::vm::value`).
+    value payload{};
 };
 
 class parser

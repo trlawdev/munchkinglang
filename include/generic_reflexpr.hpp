@@ -1224,6 +1224,49 @@ private:
                 ast::make_stmt_ptr(ast::break_stmt{}, stmt.loc));
             return;
         }
+        if (stmt.type == ast::stmt_type::Insert)
+        {
+            const auto &insert = ast::as_stmt<ast::insert_stmt>(stmt);
+            ast::insert_stmt copy;
+            copy.receiver = insert.receiver;
+            copy.map_expr = lower_ct_expr(*insert.map_expr, env, bind, loc);
+            copy.entries = lower_ct_expr(*insert.entries, env, bind, loc);
+            dst.statements.push_back(ast::make_stmt_ptr(std::move(copy), stmt.loc));
+            return;
+        }
+        if (stmt.type == ast::stmt_type::Match)
+        {
+            const auto &match = ast::as_stmt<ast::match_stmt>(stmt);
+            ast::match_stmt copy;
+            copy.scrutinee = lower_ct_expr(*match.scrutinee, env, bind, loc);
+            for (const auto &arm : match.cases)
+            {
+                ast::match_case out_arm;
+                out_arm.loc = arm.loc;
+                out_arm.enum_name = arm.enum_name;
+                out_arm.member = arm.member;
+                out_arm.body = std::make_unique<ast::block_stmt>();
+                out_arm.body->loc = arm.body->loc;
+                lower_block(*arm.body, env, bind, *out_arm.body, loc);
+                copy.cases.push_back(std::move(out_arm));
+            }
+            dst.statements.push_back(ast::make_stmt_ptr(std::move(copy), stmt.loc));
+            return;
+        }
+        if (stmt.type == ast::stmt_type::Acquire)
+        {
+            dst.statements.push_back(ast::make_stmt_ptr(
+                ast::acquire_stmt{ast::as_stmt<ast::acquire_stmt>(stmt).lock_name},
+                stmt.loc));
+            return;
+        }
+        if (stmt.type == ast::stmt_type::Release)
+        {
+            dst.statements.push_back(ast::make_stmt_ptr(
+                ast::release_stmt{ast::as_stmt<ast::release_stmt>(stmt).lock_name},
+                stmt.loc));
+            return;
+        }
         fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
                      ": error: unsupported statement inside generic/reflexpr body");
     }
@@ -1686,6 +1729,106 @@ private:
             for (const auto &el : ast::as<ast::tuple_literal>(expr).elements)
             {
                 out.elements.push_back(lower_ct_expr(*el, env, bind, loc));
+            }
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        if (expr.type == ast::expr_type::PipeInsert)
+        {
+            const auto &ins = ast::as<ast::pipe_insert_expr>(expr);
+            return ast::make_expr_ptr(
+                ast::pipe_insert_expr{lower_ct_expr(*ins.value, env, bind, loc),
+                                      ins.pipe_name},
+                expr.loc);
+        }
+        if (expr.type == ast::expr_type::PipeExtract)
+        {
+            return ast::make_expr_ptr(
+                ast::pipe_extract_expr{
+                    ast::as<ast::pipe_extract_expr>(expr).pipe_name},
+                expr.loc);
+        }
+        if (expr.type == ast::expr_type::ChannelInsert)
+        {
+            const auto &ins = ast::as<ast::channel_insert_expr>(expr);
+            return ast::make_expr_ptr(
+                ast::channel_insert_expr{
+                    lower_ct_expr(*ins.value, env, bind, loc), ins.channel_name},
+                expr.loc);
+        }
+        if (expr.type == ast::expr_type::ChannelExtract)
+        {
+            return ast::make_expr_ptr(
+                ast::channel_extract_expr{
+                    ast::as<ast::channel_extract_expr>(expr).channel_name},
+                expr.loc);
+        }
+        if (expr.type == ast::expr_type::Alloc)
+        {
+            const auto &alloc = ast::as<ast::alloc_expr>(expr);
+            ast::alloc_expr out;
+            out.capacity = lower_ct_expr(*alloc.capacity, env, bind, loc);
+            for (const auto &init : alloc.initial_values)
+            {
+                out.initial_values.push_back(lower_ct_expr(*init, env, bind, loc));
+            }
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        if (expr.type == ast::expr_type::Free)
+        {
+            return ast::make_expr_ptr(
+                ast::free_expr{ast::as<ast::free_expr>(expr).buffer_name},
+                expr.loc);
+        }
+        if (expr.type == ast::expr_type::Simd)
+        {
+            const auto &simd = ast::as<ast::simd_expr>(expr);
+            return ast::make_expr_ptr(
+                ast::simd_expr{lower_ct_expr(*simd.operand, env, bind, loc)},
+                expr.loc);
+        }
+        if (expr.type == ast::expr_type::Lambda)
+        {
+            const auto &lambda = ast::as<ast::lambda_expr>(expr);
+            ast::lambda_expr out;
+            for (const auto &param : lambda.parameters)
+            {
+                ast::parameter p;
+                p.loc = param.loc;
+                p.name = param.name;
+                p.type = clone_type(*param.type);
+                out.parameters.push_back(std::move(p));
+            }
+            out.return_type = clone_type(*lambda.return_type);
+            out.body = std::make_unique<ast::block_stmt>();
+            out.body->loc = lambda.body->loc;
+            lower_block(*lambda.body, env, bind, *out.body, loc);
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        if (expr.type == ast::expr_type::MapLiteral)
+        {
+            const auto &map = ast::as<ast::map_literal>(expr);
+            ast::map_literal out;
+            out.key_type = clone_type(*map.key_type);
+            out.value_type = clone_type(*map.value_type);
+            for (const auto &entry : map.entries)
+            {
+                ast::map_entry e;
+                e.key = lower_ct_expr(*entry.key, env, bind, loc);
+                e.value = lower_ct_expr(*entry.value, env, bind, loc);
+                out.entries.push_back(std::move(e));
+            }
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        if (expr.type == ast::expr_type::MapEntriesLiteral)
+        {
+            const auto &map = ast::as<ast::map_entries_literal>(expr);
+            ast::map_entries_literal out;
+            for (const auto &entry : map.entries)
+            {
+                ast::map_entry e;
+                e.key = lower_ct_expr(*entry.key, env, bind, loc);
+                e.value = lower_ct_expr(*entry.value, env, bind, loc);
+                out.entries.push_back(std::move(e));
             }
             return ast::make_expr_ptr(std::move(out), expr.loc);
         }

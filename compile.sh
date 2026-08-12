@@ -160,8 +160,14 @@ case "$MUNX_NATIVE_BACKEND" in
         ;;
 esac
 
+# POSIX dynamic loading (`dlopen` / `dlsym`) for `load_library`.
+extra_libs=()
+if [[ "$(uname -s)" != "Darwin" && "$(uname -s)" != *MINGW* && "$(uname -s)" != *MSYS* ]]; then
+    extra_libs+=(-ldl)
+fi
+
 echo "Compiling $OUTPUT ($BUILD_TYPE, $CXX [$COMPILER_FAMILY], native=$MUNX_NATIVE_BACKEND, exceptions disabled)..."
 "$CXX" "${common[@]}" "${compiler_flags[@]}" "${warnings[@]}" "${opt[@]}" "${simd[@]}" \
     "${native_flags[@]}" \
-    src/main.cpp -o "$OUTPUT" "${ld[@]}" "${linker_flags[@]}"
+    src/main.cpp -o "$OUTPUT" "${ld[@]}" "${linker_flags[@]}" "${extra_libs[@]}"
 echo "Built ./$OUTPUT"

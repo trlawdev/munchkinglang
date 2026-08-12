@@ -6,11 +6,18 @@
 
 #include "ast.hpp"
 #include "errors.hpp"
+#include "keywords.hpp"
+#include "lexer.hpp"
+#include "parser.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -232,9 +239,16 @@ struct func_info
 {
     std::string name;
     std::string package_name;
+    std::string return_type_name;
     std::vector<std::string> type_params;
     std::vector<param_info> params;
     bool is_meta{false};
+};
+
+struct package_info
+{
+    std::string name;
+    std::vector<std::string> function_names;
 };
 
 struct ct_value
@@ -242,16 +256,18 @@ struct ct_value
     enum class kind
     {
         None,
-        ObjectArtifact, ///< ObjectReflectionArtifact
-        FuncArtifact,   ///< FunctionReflectionArtifact
-        Members,        ///< Object field list
-        MetaParams,     ///< Generic type-param list
-        FuncParams,     ///< Function parameter list
-        Field,          ///< Object field
-        MetaParam,      ///< One generic type param
-        FuncParam,      ///< One function parameter
-        TypeName,       ///< Bound local's static object type name
-        Bool,           ///< Compile-time bool
+        ObjectArtifact,  ///< ObjectReflectionArtifact
+        FuncArtifact,    ///< FunctionReflectionArtifact
+        PackageArtifact, ///< PackageReflectionArtifact
+        Members,         ///< Object field list
+        FuncMembers,     ///< Package function list
+        MetaParams,      ///< Generic type-param list
+        FuncParams,      ///< Function parameter list
+        Field,           ///< Object field
+        MetaParam,       ///< One generic type param
+        FuncParam,       ///< One function parameter
+        TypeName,        ///< Bound local's static object type name
+        Bool,            ///< Compile-time bool
     } tag{kind::None};
     std::string type_name;
     std::string func_name;
@@ -260,6 +276,7 @@ struct ct_value
     std::vector<field_info> fields;
     std::vector<param_info> params;
     std::vector<std::string> meta_names;
+    std::vector<std::string> func_names;
     field_info field{};
     param_info param{};
 };
@@ -271,6 +288,7 @@ public:
     {
         collect_objects();
         collect_functions();
+        collect_imported_packages();
     }
 
     void run()
@@ -285,12 +303,34 @@ private:
     ast::program &program_;
     std::unordered_map<std::string, object_info> objects_;
     std::unordered_map<std::string, func_info> functions_;
+    std::unordered_map<std::string, package_info> packages_;
+    std::unordered_set<std::string> imported_packages_;
     std::unordered_map<std::string, const ast::func_decl *> generics_;
     std::unordered_map<std::string, std::string> local_types_;
     std::unordered_map<std::string, bool> specialized_done_;
     std::vector<std::unique_ptr<ast::stmt_node>> specialized_;
     /// Field being unrolled by `::reflect_for` (for nested generic inference).
     const field_info *current_field_{nullptr};
+
+    static func_info make_func_info(const ast::func_decl &fn,
+                                    const std::string &package_name)
+    {
+        func_info info;
+        info.name = fn.name;
+        info.package_name = package_name;
+        info.return_type_name = named_type_name(*fn.return_type);
+        info.type_params = fn.type_params;
+        info.is_meta = !fn.type_params.empty();
+        for (const auto &p : fn.parameters)
+        {
+            param_info pi;
+            pi.name = p.name;
+            pi.type_name = named_type_name(*p.type);
+            pi.kind = type_kind_name(*p.type);
+            info.params.push_back(std::move(pi));
+        }
+        return info;
+    }
 
     void collect_objects()
     {
@@ -316,6 +356,8 @@ private:
 
     void collect_functions()
     {
+        package_info pkg;
+        pkg.name = program_.package_name;
         for (const auto &stmt : program_.statements)
         {
             if (stmt->type != ast::stmt_type::FuncDecl)
@@ -323,21 +365,132 @@ private:
                 continue;
             }
             const auto &fn = ast::as_stmt<ast::func_decl>(*stmt);
-            func_info info;
-            info.name = fn.name;
-            info.package_name = program_.package_name;
-            info.type_params = fn.type_params;
-            info.is_meta = !fn.type_params.empty();
-            for (const auto &p : fn.parameters)
-            {
-                param_info pi;
-                pi.name = p.name;
-                pi.type_name = named_type_name(*p.type);
-                pi.kind = type_kind_name(*p.type);
-                info.params.push_back(std::move(pi));
-            }
+            func_info info = make_func_info(fn, program_.package_name);
+            pkg.function_names.push_back(info.name);
             functions_.emplace(fn.name, std::move(info));
         }
+        packages_.emplace(program_.package_name, std::move(pkg));
+    }
+
+    static std::string read_source_file(const std::filesystem::path &path)
+    {
+        std::ifstream in(path);
+        if (!in)
+        {
+            return {};
+        }
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        return buf.str();
+    }
+
+    void ingest_package_program(const ast::program &pkg)
+    {
+        package_info info;
+        info.name = pkg.package_name;
+        for (const auto &stmt : pkg.statements)
+        {
+            if (stmt->type != ast::stmt_type::FuncDecl)
+            {
+                continue;
+            }
+            const auto &fn = ast::as_stmt<ast::func_decl>(*stmt);
+            func_info fi = make_func_info(fn, pkg.package_name);
+            // Qualify foreign function keys so they do not collide with locals.
+            const std::string key = pkg.package_name + "::" + fi.name;
+            info.function_names.push_back(fi.name);
+            functions_.emplace(key, std::move(fi));
+        }
+        packages_.emplace(pkg.package_name, std::move(info));
+    }
+
+    void collect_imported_packages()
+    {
+        for (const auto &imp : program_.imports)
+        {
+            imported_packages_.insert(imp.package);
+        }
+        if (program_.imports.empty() || program_.package_loc.file.empty())
+        {
+            return;
+        }
+        const auto dir =
+            std::filesystem::path{program_.package_loc.file}.parent_path();
+        for (const auto &imp : program_.imports)
+        {
+            if (imp.package == program_.package_name ||
+                packages_.contains(imp.package))
+            {
+                continue;
+            }
+            const auto path = dir / (imp.package + ".mx");
+            const std::string source = read_source_file(path);
+            if (source.empty())
+            {
+                continue;
+            }
+            lexer lex{source, keywords(), path};
+            parser parse{lex.read_tokens(), path};
+            ast::program imported = parse.parse_program();
+            // Do not expand imports recursively here; only harvest declarations.
+            ingest_package_program(imported);
+        }
+    }
+
+    const func_info *lookup_func(const ct_value &art) const
+    {
+        if (art.tag != ct_value::kind::FuncArtifact)
+        {
+            return nullptr;
+        }
+        if (!art.package_name.empty() &&
+            art.package_name != program_.package_name)
+        {
+            const auto key = art.package_name + "::" + art.func_name;
+            const auto found = functions_.find(key);
+            if (found != functions_.end())
+            {
+                return &found->second;
+            }
+        }
+        const auto found = functions_.find(art.func_name);
+        if (found == functions_.end())
+        {
+            return nullptr;
+        }
+        return &found->second;
+    }
+
+    static std::string stringify_params(const std::vector<param_info> &params)
+    {
+        std::string out = "[";
+        for (size_t i = 0; i < params.size(); ++i)
+        {
+            if (i != 0)
+            {
+                out += ", ";
+            }
+            out += params[i].name;
+            out += ": ";
+            out += params[i].type_name;
+        }
+        out += "]";
+        return out;
+    }
+
+    static std::string stringify_meta_params(const std::vector<std::string> &names)
+    {
+        std::string out = "[";
+        for (size_t i = 0; i < names.size(); ++i)
+        {
+            if (i != 0)
+            {
+                out += ", ";
+            }
+            out += names[i];
+        }
+        out += "]";
+        return out;
     }
 
     void collect_generics()
@@ -782,9 +935,15 @@ private:
                         fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
                                      ": error: ::meta_params expects a FunctionReflectionArtifact");
                     }
+                    const func_info *info = lookup_func(*fn);
+                    if (info == nullptr)
+                    {
+                        fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
+                                     ": error: ::meta_params: unknown function artifact");
+                    }
                     ct_value meta;
                     meta.tag = ct_value::kind::MetaParams;
-                    meta.meta_names = functions_.at(fn->func_name).type_params;
+                    meta.meta_names = info->type_params;
                     env[assign.targets.front().name] = std::move(meta);
                     return;
                 }
@@ -796,10 +955,39 @@ private:
                         fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
                                      ": error: ::params expects a FunctionReflectionArtifact");
                     }
+                    const func_info *info = lookup_func(*fn);
+                    if (info == nullptr)
+                    {
+                        fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
+                                     ": error: ::params: unknown function artifact");
+                    }
                     ct_value ps;
                     ps.tag = ct_value::kind::FuncParams;
-                    ps.params = functions_.at(fn->func_name).params;
+                    ps.params = info->params;
                     env[assign.targets.front().name] = std::move(ps);
+                    return;
+                }
+                if (cal == "::function_members" && call.arguments.size() == 1)
+                {
+                    const ct_value *pkg = eval_ct(*call.arguments[0], env);
+                    if (pkg == nullptr || pkg->tag != ct_value::kind::PackageArtifact)
+                    {
+                        fail_compile(
+                            stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
+                            ": error: ::function_members expects a PackageReflectionArtifact");
+                    }
+                    const auto found = packages_.find(pkg->package_name);
+                    if (found == packages_.end())
+                    {
+                        fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
+                                     ": error: unknown package `" + pkg->package_name +
+                                     "`");
+                    }
+                    ct_value mem;
+                    mem.tag = ct_value::kind::FuncMembers;
+                    mem.package_name = pkg->package_name;
+                    mem.func_names = found->second.function_names;
+                    env[assign.targets.front().name] = std::move(mem);
                     return;
                 }
             }
@@ -830,6 +1018,7 @@ private:
             // Runtime `if`: keep structure, lower nested statements/expressions.
             ast::if_stmt copy;
             copy.then_branch = std::make_unique<ast::if_branch>();
+            copy.then_branch->hint = ifs.then_branch->hint;
             copy.then_branch->condition =
                 lower_ct_expr(*ifs.then_branch->condition, env, bind, loc);
             copy.then_branch->body = std::make_unique<ast::block_stmt>();
@@ -839,6 +1028,7 @@ private:
             for (const auto &br : ifs.else_if_branches)
             {
                 auto out_br = std::make_unique<ast::if_branch>();
+                out_br->hint = br->hint;
                 out_br->condition = lower_ct_expr(*br->condition, env, bind, loc);
                 out_br->body = std::make_unique<ast::block_stmt>();
                 out_br->body->loc = br->body->loc;
@@ -907,8 +1097,30 @@ private:
                 }
                 return;
             }
-            fail_compile(stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
-                         ": error: ::reflect_for expects fields, meta_params, or params");
+            if (coll->tag == ct_value::kind::FuncMembers)
+            {
+                for (const auto &fname : coll->func_names)
+                {
+                    auto nested = env;
+                    ct_value item;
+                    item.tag = ct_value::kind::FuncArtifact;
+                    item.func_name = fname;
+                    item.package_name = coll->package_name;
+                    const func_info *info = lookup_func(item);
+                    if (info != nullptr)
+                    {
+                        item.flag = info->is_meta;
+                        item.package_name = info->package_name;
+                    }
+                    nested[rf.item_name] = std::move(item);
+                    lower_block(*rf.body, nested, bind, dst, loc);
+                }
+                return;
+            }
+            fail_compile(
+                stmt.loc.file + ':' + std::to_string(stmt.loc.line) +
+                ": error: ::reflect_for expects fields, function_members, "
+                "meta_params, or params");
             return;
         }
         if (stmt.type == ast::stmt_type::TypeidMatch)
@@ -1023,6 +1235,32 @@ private:
         if (arg.type == ast::expr_type::Identifier)
         {
             const std::string &n = ast::as<ast::identifier>(arg).name;
+            if (n == "this_package")
+            {
+                ct_value art;
+                art.tag = ct_value::kind::PackageArtifact;
+                art.package_name = program_.package_name;
+                return art;
+            }
+            if (n == program_.package_name)
+            {
+                fail_compile(loc.file + ':' + std::to_string(loc.line) +
+                             ": error: ::reflexpr on the current package requires "
+                             "`this_package`, not the package name");
+            }
+            if (imported_packages_.contains(n) || packages_.contains(n))
+            {
+                if (!packages_.contains(n))
+                {
+                    fail_compile(loc.file + ':' + std::to_string(loc.line) +
+                                 ": error: imported package `" + n +
+                                 "` could not be loaded for reflection");
+                }
+                ct_value art;
+                art.tag = ct_value::kind::PackageArtifact;
+                art.package_name = n;
+                return art;
+            }
             if (functions_.contains(n))
             {
                 const func_info &fn = functions_.at(n);
@@ -1066,7 +1304,8 @@ private:
             return art;
         }
         fail_compile(loc.file + ':' + std::to_string(loc.line) +
-                     ": error: ::reflexpr requires an object or function");
+                     ": error: ::reflexpr requires an object, function, "
+                     "`this_package`, or imported package");
         return {};
     }
 
@@ -1094,14 +1333,38 @@ private:
             {
                 return base;
             }
-            if (mem.member == "is_meta_function" &&
-                base->tag == ct_value::kind::FuncArtifact)
+            if (base->tag == ct_value::kind::FuncArtifact)
             {
-                // Materialize into thread-local storage for pointer stability.
-                static thread_local ct_value bool_scratch;
-                bool_scratch.tag = ct_value::kind::Bool;
-                bool_scratch.flag = base->flag;
-                return &bool_scratch;
+                if (mem.member == "is_meta_function")
+                {
+                    // Materialize into thread-local storage for pointer stability.
+                    static thread_local ct_value bool_scratch;
+                    bool_scratch.tag = ct_value::kind::Bool;
+                    bool_scratch.flag = base->flag;
+                    return &bool_scratch;
+                }
+                if (mem.member == "params" || mem.member == "meta_params")
+                {
+                    const func_info *info = lookup_func(*base);
+                    if (info == nullptr)
+                    {
+                        return nullptr;
+                    }
+                    static thread_local ct_value list_scratch;
+                    if (mem.member == "params")
+                    {
+                        list_scratch.tag = ct_value::kind::FuncParams;
+                        list_scratch.params = info->params;
+                        list_scratch.meta_names.clear();
+                    }
+                    else
+                    {
+                        list_scratch.tag = ct_value::kind::MetaParams;
+                        list_scratch.meta_names = info->type_params;
+                        list_scratch.params.clear();
+                    }
+                    return &list_scratch;
+                }
             }
             return base;
         }
@@ -1215,6 +1478,29 @@ private:
                     if (mem.member == "is_meta_function")
                     {
                         return ast::make_expr_ptr(ast::bool_literal{base->flag}, expr.loc);
+                    }
+                    if (mem.member == "return_type")
+                    {
+                        const func_info *info = lookup_func(*base);
+                        return make_string(
+                            info != nullptr ? info->return_type_name : std::string{},
+                            expr.loc);
+                    }
+                    if (mem.member == "params")
+                    {
+                        const func_info *info = lookup_func(*base);
+                        return make_string(
+                            info != nullptr ? stringify_params(info->params)
+                                            : std::string{"[]"},
+                            expr.loc);
+                    }
+                    if (mem.member == "meta_params")
+                    {
+                        const func_info *info = lookup_func(*base);
+                        return make_string(
+                            info != nullptr ? stringify_meta_params(info->type_params)
+                                            : std::string{"[]"},
+                            expr.loc);
                     }
                 }
                 if (base->tag == ct_value::kind::MetaParam ||
@@ -1367,6 +1653,41 @@ private:
         {
             return ast::make_expr_ptr(
                 ast::char_literal{ast::as<ast::char_literal>(expr).value}, expr.loc);
+        }
+        if (expr.type == ast::expr_type::RegexLiteral)
+        {
+            return ast::make_expr_ptr(
+                ast::regex_literal{ast::as<ast::regex_literal>(expr).pattern},
+                expr.loc);
+        }
+        if (expr.type == ast::expr_type::ArrayLiteral)
+        {
+            ast::array_literal out;
+            for (const auto &el : ast::as<ast::array_literal>(expr).elements)
+            {
+                out.elements.push_back(lower_ct_expr(*el, env, bind, loc));
+            }
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        if (expr.type == ast::expr_type::TypedArrayLiteral)
+        {
+            const auto &typed = ast::as<ast::typed_array_literal>(expr);
+            ast::typed_array_literal out;
+            out.element_type = clone_type(*typed.element_type);
+            for (const auto &el : typed.elements)
+            {
+                out.elements.push_back(lower_ct_expr(*el, env, bind, loc));
+            }
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        if (expr.type == ast::expr_type::TupleLiteral)
+        {
+            ast::tuple_literal out;
+            for (const auto &el : ast::as<ast::tuple_literal>(expr).elements)
+            {
+                out.elements.push_back(lower_ct_expr(*el, env, bind, loc));
+            }
+            return ast::make_expr_ptr(std::move(out), expr.loc);
         }
         fail_compile(loc.file + ':' + std::to_string(loc.line) +
                      ": error: unsupported expression in reflexpr lowering");

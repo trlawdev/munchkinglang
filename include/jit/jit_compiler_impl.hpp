@@ -241,6 +241,18 @@ inline void compile_handlers(compiled_unit &unit, virtual_machine &,
             });
             break;
         }
+        case Opcode::HINT_BRANCH:
+        {
+            const uint8_t expected_taken = cursor.read_u8();
+            const size_t next_pc = cursor.pc;
+            bind([expected_taken, next_pc](virtual_machine &, frame &current,
+                                           size_t) {
+                branch_predictor::instance().seed_static_hint(
+                    next_pc, expected_taken != 0);
+                current.pc = next_pc;
+            });
+            break;
+        }
         case Opcode::JMP_IF_FALSE:
         {
             const uint32_t target = cursor.read_scalar<uint32_t>();

@@ -315,6 +315,7 @@ private:
         MUNX_OPCODE_NAME(JMP);
         MUNX_OPCODE_NAME(JMP_IF_FALSE);
         MUNX_OPCODE_NAME(JMP_IF_TRUE);
+        MUNX_OPCODE_NAME(HINT_BRANCH);
         MUNX_OPCODE_NAME(CALL);
         MUNX_OPCODE_NAME(RET);
         MUNX_OPCODE_NAME(HALT);
@@ -431,6 +432,10 @@ private:
         case Opcode::JMP_IF_TRUE:
         case Opcode::MONITOR_ENTER:
             out_ << reader.u32("jump target");
+            break;
+        case Opcode::HINT_BRANCH:
+            out_ << "expected_taken="
+                 << static_cast<unsigned>(reader.u8("expected taken"));
             break;
         case Opcode::CALL:
             out_ << "argc=" << static_cast<unsigned>(

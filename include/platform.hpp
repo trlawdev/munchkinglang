@@ -75,6 +75,10 @@ extern char **environ;
 extern "C" char ***_NSGetEnviron(void);
 #endif
 
+#if MUNX_PLATFORM_POSIX
+#include <dlfcn.h>
+#endif
+
 #if MUNX_PLATFORM_WINDOWS
 using ssize_t = SSIZE_T;
 #endif
@@ -278,5 +282,86 @@ inline char **platform_environ()
 #endif
 }
 #endif
+
+/// Open a shared library / DLL at @p path. Returns null on failure.
+inline void *platform_dlopen(const std::string &path)
+{
+#if MUNX_PLATFORM_WINDOWS
+    return reinterpret_cast<void *>(::LoadLibraryA(path.c_str()));
+#elif MUNX_PLATFORM_POSIX
+    return ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+#else
+    (void)path;
+    return nullptr;
+#endif
+}
+
+/// Resolve @p symbol in an open library handle. Returns null on failure.
+inline void *platform_dlsym(void *handle, const std::string &symbol)
+{
+#if MUNX_PLATFORM_WINDOWS
+    return reinterpret_cast<void *>(
+        ::GetProcAddress(static_cast<HMODULE>(handle), symbol.c_str()));
+#elif MUNX_PLATFORM_POSIX
+    return ::dlsym(handle, symbol.c_str());
+#else
+    (void)handle;
+    (void)symbol;
+    return nullptr;
+#endif
+}
+
+/// Close a library previously opened with @ref platform_dlopen.
+inline void platform_dlclose(void *handle)
+{
+#if MUNX_PLATFORM_WINDOWS
+    if (handle != nullptr)
+    {
+        ::FreeLibrary(static_cast<HMODULE>(handle));
+    }
+#elif MUNX_PLATFORM_POSIX
+    if (handle != nullptr)
+    {
+        ::dlclose(handle);
+    }
+#else
+    (void)handle;
+#endif
+}
+
+/// Human-readable loader error after a failed open/resolve, or empty.
+inline std::string platform_dlerror()
+{
+#if MUNX_PLATFORM_WINDOWS
+    const DWORD code = ::GetLastError();
+    if (code == 0)
+    {
+        return {};
+    }
+    char *message = nullptr;
+    const DWORD size = ::FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<char *>(&message), 0, nullptr);
+    if (size == 0 || message == nullptr)
+    {
+        return "error " + std::to_string(code);
+    }
+    std::string text{message, size};
+    ::LocalFree(message);
+    while (!text.empty() &&
+           (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
+    {
+        text.pop_back();
+    }
+    return text;
+#elif MUNX_PLATFORM_POSIX
+    const char *err = ::dlerror();
+    return err == nullptr ? std::string{} : std::string{err};
+#else
+    return "dynamic loading is not supported on this platform";
+#endif
+}
 
 } // namespace munx

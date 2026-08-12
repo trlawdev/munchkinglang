@@ -48,3 +48,52 @@ func_params = ::params(refl_func) // ::params is a keyword that takes a Reflecti
     println("param: {", param.name, ",", param.type, "}")
 }
 
+refl_package = ::reflexpr(this_package) //this_package is a keyword that specifies this package, ::reflexpr should be able to accept imported package names except the current package name
+funcs_package = ::function_members(refl_package) // ::function_members is a keyword, its returns an array of package function reflection artifact array
+::reflect_for(func_ of funcs_package) {
+	println("function name: ", func_.name)
+	println("function return_type: ", func_.return_type)
+	println("function params: ", func_.params) // essentially returns the same values as ::params, for meta function, it will be <refl_artifact>.meta_params
+}
+
+s = "test string"
+if likely(s.len > 0) { // likely is a keyword that give hints to the branch predictor that this branch is likely
+    println("string is not empty")
+} else {
+    println("string is: ", s)
+}
+
+arr = ['a', "hello"]
+
+if unlikely(arr.len == 0) { // unlikely is a keyword that gives hint to the munx lang vm/ native implementation that this branch is unlikely to be taken
+    println("Array is empty")
+} else {
+    indx = 0
+    loop indx < arr.len {
+        println("arr[", indx, "] = ", arr[indx])
+        indx = indx + 1
+    }
+}
+
+//Interfacing with low level C library
+
+library_handle = load_library("object.o") // load_library loads a C shared library / DLL (.o falls back to .so/.dll/.dylib)
+if library_handle == null {
+    fail("failed to load library: ", "object.o")
+}
+
+func_handle = resolve_callable(library_handle, "add_int") // resolve_callable resolves a function in a shared object or dll, returns a function handle that is callable, assume add_int is a c function with structure like 
+//int add_int(int, int)
+// 
+
+value = func_handle(2, 3) // calles the resolved function underneath and mashalls munx value in c value
+println("add_int(2, 3) = ", value)
+//value = 5
+// 
+close_library(library_handle)
+
+//I'll add support for pointers later
+
+
+
+

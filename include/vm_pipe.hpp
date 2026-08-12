@@ -291,6 +291,14 @@ inline void encode_value(std::vector<std::byte> &buffer, const value &item)
         {
             throw_error("threads cannot be sent through a pipe");
         }
+        void operator()(const library_ref &) const
+        {
+            throw_error("library handles cannot be sent through a pipe");
+        }
+        void operator()(const foreign_callable_ref &) const
+        {
+            throw_error("foreign callables cannot be sent through a pipe");
+        }
     };
     std::visit(encoder{buffer}, item.data);
 }

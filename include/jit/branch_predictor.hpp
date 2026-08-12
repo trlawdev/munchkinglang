@@ -158,6 +158,24 @@ public:
                    ((1U << history_bits) - 1U);
     }
 
+    /// Apply a static `likely` / `unlikely` compiler hint at @p branch_pc.
+    /// @param expected_taken True when the jump arm is the expected outcome.
+    void seed_static_hint(size_t branch_pc, bool expected_taken) noexcept
+    {
+        entry &slot = table_[index_for(branch_pc)];
+        if (expected_taken)
+        {
+            slot.counter = 3;
+            slot.bias = 32;
+        }
+        else
+        {
+            slot.counter = 0;
+            slot.bias = -32;
+        }
+        slot.warmup = 255;
+    }
+
     /// Warm-start tables from collected runtime profile data.
     void seed_from_profile(const execution_profile &profile)
     {

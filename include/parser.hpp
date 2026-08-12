@@ -668,6 +668,26 @@ namespace munx
                 return ast::make_expr_ptr(std::move(simd), loc);
             }
 
+            // `likely` / `unlikely` as expression wrappers (also peeled from `if`).
+            if (check_kw("likely") || check_kw("unlikely"))
+            {
+                const auto loc = here();
+                const std::string name = text(advance());
+                expect(token_type::LPAREN, "expected `(` after branch hint");
+                ast::call_expr call;
+                call.callee = ast::make_expr_ptr(ast::identifier{name}, loc);
+                call.arguments.push_back(parse_expression());
+                expect(token_type::RPAREN, "expected `)` after branch hint");
+                return ast::make_expr_ptr(std::move(call), loc);
+            }
+
+            if (check_kw("this_package"))
+            {
+                const auto loc = here();
+                advance();
+                return ast::make_expr_ptr(ast::identifier{"this_package"}, loc);
+            }
+
             if (check_kw("lambda"))
             {
                 return parse_lambda();
@@ -1263,12 +1283,38 @@ namespace munx
             return ast::make_stmt_ptr(std::move(object), loc);
         }
 
+        /// Peel `likely(expr)` / `unlikely(expr)` wrappers off an if-condition.
+        static void apply_branch_hint(ast::if_branch &branch)
+        {
+            if (branch.condition == nullptr ||
+                branch.condition->type != ast::expr_type::Call)
+            {
+                return;
+            }
+            auto &call = ast::as<ast::call_expr>(*branch.condition);
+            if (call.arguments.size() != 1 ||
+                call.callee->type != ast::expr_type::Identifier)
+            {
+                return;
+            }
+            const std::string &name = ast::as<ast::identifier>(*call.callee).name;
+            if (name != "likely" && name != "unlikely")
+            {
+                return;
+            }
+            branch.hint = name == "likely" ? ast::branch_hint::Likely
+                                           : ast::branch_hint::Unlikely;
+            auto inner = std::move(call.arguments[0]);
+            branch.condition = std::move(inner);
+        }
+
         /// Parse an `if` / `else if` / `else` chain (keyword already consumed).
         std::unique_ptr<ast::stmt_node> parse_if(const ast::source_loc &loc)
         {
             ast::if_stmt stmt;
             stmt.then_branch = std::make_unique<ast::if_branch>();
             stmt.then_branch->condition = parse_expression();
+            apply_branch_hint(*stmt.then_branch);
             stmt.then_branch->body = parse_block();
 
             while (match_kw("else"))
@@ -1277,6 +1323,7 @@ namespace munx
                 {
                     auto branch = std::make_unique<ast::if_branch>();
                     branch->condition = parse_expression();
+                    apply_branch_hint(*branch);
                     branch->body = parse_block();
                     stmt.else_if_branches.push_back(std::move(branch));
                 }
@@ -1376,12 +1423,12 @@ namespace munx
             const auto loc = here();
             expect(token_type::SCOPE, "expected `::`");
             if (!check_kw("reflexpr") && !check_kw("members") &&
-                !check_kw("meta_params") && !check_kw("params") &&
-                !check_kw("construct"))
+                !check_kw("function_members") && !check_kw("meta_params") &&
+                !check_kw("params") && !check_kw("construct"))
             {
                 error_here(
-                    "expected `reflexpr`, `members`, `meta_params`, `params`, or "
-                    "`construct` after `::`");
+                    "expected `reflexpr`, `members`, `function_members`, "
+                    "`meta_params`, `params`, or `construct` after `::`");
             }
             const std::string name = "::" + text(advance());
             expect(token_type::LPAREN, "expected `(` after compiler form");

@@ -1,7 +1,7 @@
 # Munx Bytecode Opcode Reference
 
 This document describes the instruction set emitted by
-`munx::bytecode_compiler` for **MX bytecode format version 7**. The canonical
+`munx::bytecode_compiler` for **MX bytecode format version 8**. The canonical
 opcode declarations are in [`include/Opcode.hpp`](include/Opcode.hpp).
 
 ## Encoding conventions
@@ -161,6 +161,7 @@ expression so evaluation short-circuits.
 | `0x1F` | `JMP` | `u32 target` | `... -- ...` | Jump unconditionally. |
 | `0x20` | `JMP_IF_FALSE` | `u32 target` | `..., condition -- ...` | Pop the condition and jump when it is false. |
 | `0x21` | `JMP_IF_TRUE` | `u32 target` | `..., condition -- ...` | Pop the condition and jump when it is true. |
+| `0x3C` | `HINT_BRANCH` | `u8 expected_taken` | `... -- ...` | Seed the branch predictor for the immediately following `JMP_IF_*` (`1` = jump likely, `0` = fallthrough likely). Emitted for `likely` / `unlikely` on `if` conditions. |
 | `0x22` | `CALL` | `u8 argc` | `..., callee, arg0, ..., argN-1 -- ..., result` | Invoke `callee` with `argc` arguments. A void call pushes `null`. |
 | `0x23` | `RET` | — | `..., result -- ...` | Return the top value to the caller. |
 | `0x24` | `HALT` | — | `... -- ...` | Finish a package initializer. |
@@ -250,7 +251,7 @@ On normal completion, `MONITOR_EXIT` is followed by a `JMP` over the handler.
 
 ## `.mxb` container summary
 
-The opcode streams are contained in a packed **version 7** `.mxb` image:
+The opcode streams are contained in a packed **version 8** `.mxb` image:
 
 ```text
 mx_program_header

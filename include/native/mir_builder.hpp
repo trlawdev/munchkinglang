@@ -324,6 +324,7 @@ private:
         cbr.args = {cond};
         cbr.block_target = then_b;
         cbr.block_target_false = else_b;
+        cbr.branch_hint = static_cast<uint8_t>(stmt.then_branch->hint);
         emit(std::move(cbr));
 
         mir::instr lab_then;
@@ -351,6 +352,7 @@ private:
             cb.args = {c};
             cb.block_target = t;
             cb.block_target_false = f;
+            cb.branch_hint = static_cast<uint8_t>(br.hint);
             emit(std::move(cb));
             mir::instr lt;
             lt.op = mir::opcode::label;
@@ -730,6 +732,10 @@ private:
             return emit_null();
         }
         const std::string &name = ast::as<ast::identifier>(*call.callee).name;
+        if ((name == "likely" || name == "unlikely") && call.arguments.size() == 1)
+        {
+            return emit_expr(*call.arguments[0]);
+        }
         if (name == "pipe")
         {
             if (call.arguments.size() != 2)

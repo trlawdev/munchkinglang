@@ -70,6 +70,8 @@ struct instr
     uint32_t str_index{0};
     uint32_t block_target{0};
     uint32_t block_target_false{0};
+    /// For `cbr`: 0 none, 1 likely true-arm, 2 unlikely true-arm.
+    uint8_t branch_hint{0};
     std::string callee;
     std::vector<uint32_t> args; // value ids (SSA-lite: result index = position in instrs for producers)
     uint32_t result{std::numeric_limits<uint32_t>::max()};

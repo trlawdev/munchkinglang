@@ -225,7 +225,7 @@ private:
 
 /// Version of the .mxb bytecode format emitted by this compiler.
 /// Increment this whenever opcode encodings or the serialized layout change.
-inline constexpr uint16_t current_mx_bytecode_version{7};
+inline constexpr uint16_t current_mx_bytecode_version{8};
 
 struct __attribute__((packed)) mx_function_descriptor {
     size_t function_name_offset; // offset into the string table
@@ -723,6 +723,17 @@ private:
         const auto emit_branch = [&](const ast::if_branch &branch)
         {
             emit_expr(*branch.condition);
+            // JMP_IF_FALSE: taken ⇒ skip then-arm. `likely` ⇒ fallthrough preferred.
+            if (branch.hint == ast::branch_hint::Likely)
+            {
+                code_.op(Opcode::HINT_BRANCH);
+                code_.u8(0);
+            }
+            else if (branch.hint == ast::branch_hint::Unlikely)
+            {
+                code_.op(Opcode::HINT_BRANCH);
+                code_.u8(1);
+            }
             const uint32_t skip = code_.jump(Opcode::JMP_IF_FALSE);
             emit_block(*branch.body);
             end_jumps.push_back(code_.jump(Opcode::JMP));
@@ -875,6 +886,18 @@ private:
         case ast::expr_type::Call:
         {
             const auto &call = ast::as<ast::call_expr>(expr);
+            if (call.callee->type == ast::expr_type::Identifier &&
+                call.arguments.size() == 1)
+            {
+                const std::string &cal =
+                    ast::as<ast::identifier>(*call.callee).name;
+                if (cal == "likely" || cal == "unlikely")
+                {
+                    // Identity at runtime; `if likely/unlikely` peels the hint.
+                    emit_expr(*call.arguments[0]);
+                    break;
+                }
+            }
             if (call.arguments.size() > 255)
             {
                 codegen_error(expr.loc, "too many call arguments (max 255)");

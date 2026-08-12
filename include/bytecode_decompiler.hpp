@@ -455,6 +455,11 @@ private:
                 statement(indent, offset,
                           "goto @" + std::to_string(input.u32()));
                 break;
+            case Opcode::HINT_BRANCH:
+                statement(indent, offset,
+                          "// branch hint expected_taken=" +
+                          std::to_string(input.u8()));
+                break;
             case Opcode::JMP_IF_FALSE:
                 statement(indent, offset,
                           "if !" + pop(stack) + " goto @" +

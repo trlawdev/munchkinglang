@@ -187,7 +187,9 @@ and writes its arguments).
 | Collections | `queue`, `append`, `push`, `pop`, `remove_at` |
 | I/O | `open`, `read`, `write`, `close`, `bind`, `listen`, `accept` |
 | Concurrency | `thread`, `join`, `pipe`, `channel`, `sleep` |
-| Reflection | `::reflexpr`, `::members`, `::reflect_for`, `::match`/`typeid` (compile-time) |
+| Reflection | `::reflexpr`, `::members`, `::function_members`, `::reflect_for`, `::match`/`typeid`, `this_package` (compile-time) |
+| Branch hints | `likely(cond)` / `unlikely(cond)` on `if` conditions |
+| Native FFI | `load_library` / `resolve_callable` / `close_library` (integer args for now) |
 | Generics | `func f<T>(…)`, call-site inference or `f<Type>(…)` |
 | Environment | `argv`, `process.id()`, `in`, `out`, `subscribe` |
 

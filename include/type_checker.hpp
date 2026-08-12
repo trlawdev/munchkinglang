@@ -457,8 +457,11 @@ private:
         declare("print", {}, void_ret(), true);
         declare("println", {}, void_ret(), true);
         declare("readln", {}, str_ret(), true);
-        declare("fail", {any()}, void_ret());
+        declare("fail", {}, void_ret(), true);
         declare("fix", {any()}, any());
+        declare("load_library", {str_ret()}, any());
+        declare("resolve_callable", {any(), str_ret()}, any());
+        declare("close_library", {any()}, void_ret());
         declare("concat", {}, str_ret(), true);
         declare("trim", {str_ret()}, str_ret());
         declare("split", {any(), any()}, arr_ret(), true);

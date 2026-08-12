@@ -111,4 +111,7 @@ enum class Opcode : uint8_t
     // ---- monitor / trap ------------------------------------------------------------------
     MONITOR_ENTER, ///< u32 handler — on trap the VM jumps there with the exception pushed.
     MONITOR_EXIT,  ///< leave the protected region (no trap occurred).
+
+    // ---- static branch hints (`likely` / `unlikely`) --------------------------------------
+    HINT_BRANCH, ///< u8 expected_taken — seed predictor for the following JMP_IF_*.
 };

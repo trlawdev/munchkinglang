@@ -36,6 +36,8 @@ struct io_object;
 struct pipe_object;
 struct lock_object;
 struct thread_object;
+struct library_object;
+struct foreign_callable_object;
 
 struct map_object;
 
@@ -49,6 +51,8 @@ using io_ref = std::shared_ptr<io_object>;
 using pipe_ref = std::shared_ptr<pipe_object>;
 using lock_ref = std::shared_ptr<lock_object>;
 using thread_ref = std::shared_ptr<thread_object>;
+using library_ref = std::shared_ptr<library_object>;
+using foreign_callable_ref = std::shared_ptr<foreign_callable_object>;
 using map_ref = std::shared_ptr<map_object>;
 
 /// `Enum::Member` as produced by PUSH_ENUM.
@@ -223,7 +227,9 @@ using value_data = std::variant<
     io_ref,
     pipe_ref,
     lock_ref,
-    thread_ref>;
+    thread_ref,
+    library_ref,
+    foreign_callable_ref>;
 
 /// A dynamically typed munx runtime value.
 struct value
@@ -479,6 +485,22 @@ struct thread_object
     }
 };
 
+/// Handle from `load_library(path)`; closed by `close_library`.
+struct library_object
+{
+    std::string path;
+    void *handle{nullptr};
+    bool closed{false};
+};
+
+/// Symbol from `resolve_callable(library, name)`; callable with integer args.
+struct foreign_callable_object
+{
+    library_ref library;
+    std::string symbol;
+    void *fn{nullptr};
+};
+
 inline const char *type_name(const value &item)
 {
     struct namer
@@ -506,6 +528,11 @@ inline const char *type_name(const value &item)
         const char *operator()(const pipe_ref &) const { return "pipe"; }
         const char *operator()(const lock_ref &) const { return "lock"; }
         const char *operator()(const thread_ref &) const { return "thread"; }
+        const char *operator()(const library_ref &) const { return "library"; }
+        const char *operator()(const foreign_callable_ref &) const
+        {
+            return "foreign callable";
+        }
     };
     return std::visit(namer{}, item.data);
 }
@@ -751,6 +778,14 @@ inline std::string to_display_string(const value &item)
             return "<lock " + lock->name + ">";
         }
         std::string operator()(const thread_ref &) const { return "<thread>"; }
+        std::string operator()(const library_ref &library) const
+        {
+            return "<library " + library->path + ">";
+        }
+        std::string operator()(const foreign_callable_ref &fn) const
+        {
+            return "<foreign " + fn->symbol + ">";
+        }
     };
     return std::visit(printer{}, item.data);
 }

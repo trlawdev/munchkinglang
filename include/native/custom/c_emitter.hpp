@@ -240,10 +240,20 @@ inline void emit_function(std::ostringstream &out, const mir::function &fn)
             out << "  goto L" << in.block_target << ";\n";
             break;
         case mir::opcode::cbr:
-            out << "  if (munx_truthy(" << vref(in.args[0]) << ")) goto L"
-                << in.block_target << "; else goto L" << in.block_target_false
-                << ";\n";
+        {
+            std::string cond = "munx_truthy(" + vref(in.args[0]) + ")";
+            if (in.branch_hint == 1)
+            {
+                cond = "__builtin_expect(" + cond + ", 1)";
+            }
+            else if (in.branch_hint == 2)
+            {
+                cond = "__builtin_expect(" + cond + ", 0)";
+            }
+            out << "  if (" << cond << ") goto L" << in.block_target
+                << "; else goto L" << in.block_target_false << ";\n";
             break;
+        }
         }
     }
     if (is_init)

@@ -507,6 +507,10 @@ public:
             }
             return value{static_cast<int64_t>(write_handle(*handle, text))};
         }
+        if (const auto *foreign = callee.get_if<foreign_callable_ref>())
+        {
+            return invoke_foreign_callable(**foreign, arguments);
+        }
         throw_error(std::string{"value of type "} + type_name(callee) +
                     " is not callable");
         return value{};
@@ -946,6 +950,7 @@ private:
         install_map_builtins();
         install_io_builtins();
         install_concurrency_builtins();
+        install_ffi_builtins();
     }
 
     void install_console_builtins()
@@ -1330,6 +1335,220 @@ private:
             }
             return value{};
         });
+    }
+
+    void install_ffi_builtins()
+    {
+        define_builtin("load_library", [](virtual_machine &,
+                                          value_vector &arguments) {
+            expect_arity(arguments, 1, 1, "load_library");
+            const std::string &path = expect_string(arguments.front(), "load_library");
+            void *handle = virtual_machine::open_shared_library(path);
+            if (handle == nullptr)
+            {
+                return value{};
+            }
+            auto library = std::make_shared<library_object>();
+            library->path = path;
+            library->handle = handle;
+            return value{library};
+        });
+        define_builtin("resolve_callable", [](virtual_machine &,
+                                              value_vector &arguments) {
+            expect_arity(arguments, 2, 2, "resolve_callable");
+            const auto *library = arguments[0].get_if<library_ref>();
+            if (library == nullptr || *library == nullptr)
+            {
+                throw_error("resolve_callable expects a library handle");
+                return value{};
+            }
+            if ((*library)->closed || (*library)->handle == nullptr)
+            {
+                throw_error("resolve_callable: library is closed");
+                return value{};
+            }
+            const std::string &symbol =
+                expect_string(arguments[1], "resolve_callable");
+            (void)munx::platform_dlerror(); // clear stale error
+            void *fn = munx::platform_dlsym((*library)->handle, symbol);
+            if (fn == nullptr)
+            {
+                const std::string err = munx::platform_dlerror();
+                throw_error("resolve_callable: failed to resolve `" + symbol +
+                            "`" + (err.empty() ? "" : (": " + err)));
+                return value{};
+            }
+            auto callable = std::make_shared<foreign_callable_object>();
+            callable->library = *library;
+            callable->symbol = symbol;
+            callable->fn = fn;
+            return value{callable};
+        });
+        define_builtin("close_library", [](virtual_machine &,
+                                           value_vector &arguments) {
+            expect_arity(arguments, 1, 1, "close_library");
+            const auto *library = arguments[0].get_if<library_ref>();
+            if (library == nullptr || *library == nullptr)
+            {
+                throw_error("close_library expects a library handle");
+                return value{};
+            }
+            if (!(*library)->closed && (*library)->handle != nullptr)
+            {
+                munx::platform_dlclose((*library)->handle);
+                (*library)->handle = nullptr;
+                (*library)->closed = true;
+            }
+            return value{};
+        });
+    }
+
+    /// Try @p path and common shared-library suffixes (.so / .dll / .dylib).
+    /// Bare relative names also try `./name` because POSIX `dlopen` does not
+    /// search the current working directory unless a slash is present.
+    static void *open_shared_library(const std::string &path)
+    {
+        std::vector<std::string> bases{path};
+        const bool has_dir_sep =
+            path.find('/') != std::string::npos
+#if MUNX_PLATFORM_WINDOWS
+            || path.find('\\') != std::string::npos
+#endif
+            ;
+        if (!has_dir_sep && !path.empty())
+        {
+            bases.push_back("./" + path);
+        }
+        const auto add_suffix_variants =
+            [](const std::string &base, std::vector<std::string> &out) {
+                out.push_back(base);
+                if (base.size() >= 2 &&
+                    base.compare(base.size() - 2, 2, ".o") == 0)
+                {
+#if MUNX_PLATFORM_WINDOWS
+                    out.push_back(base.substr(0, base.size() - 2) + ".dll");
+#elif MUNX_PLATFORM_MACOS
+                    out.push_back(base.substr(0, base.size() - 2) + ".dylib");
+                    out.push_back(base.substr(0, base.size() - 2) + ".so");
+#else
+                    out.push_back(base.substr(0, base.size() - 2) + ".so");
+#endif
+                }
+                else if (base.find('.') == std::string::npos)
+                {
+#if MUNX_PLATFORM_WINDOWS
+                    out.push_back(base + ".dll");
+#elif MUNX_PLATFORM_MACOS
+                    out.push_back(base + ".dylib");
+                    out.push_back(base + ".so");
+#else
+                    out.push_back(base + ".so");
+#endif
+                }
+            };
+        std::vector<std::string> candidates;
+        for (const std::string &base : bases)
+        {
+            add_suffix_variants(base, candidates);
+        }
+        for (const std::string &candidate : candidates)
+        {
+            (void)munx::platform_dlerror();
+            void *handle = munx::platform_dlopen(candidate);
+            if (handle != nullptr)
+            {
+                return handle;
+            }
+        }
+        return nullptr;
+    }
+
+    /// Call a C function with integer marshalling (pointer args not yet supported).
+    static value invoke_foreign_callable(const foreign_callable_object &callable,
+                                         value_vector &arguments)
+    {
+        if (callable.fn == nullptr)
+        {
+            throw_error("foreign callable `" + callable.symbol + "` is null");
+            return value{};
+        }
+        if (callable.library &&
+            (callable.library->closed || callable.library->handle == nullptr))
+        {
+            throw_error("foreign callable `" + callable.symbol +
+                        "` refers to a closed library");
+            return value{};
+        }
+        if (arguments.size() > 8)
+        {
+            throw_error("foreign callable `" + callable.symbol +
+                        "` supports at most 8 integer arguments");
+            return value{};
+        }
+        int64_t args[8]{};
+        for (size_t i = 0; i < arguments.size(); ++i)
+        {
+            if (!is_numeric(arguments[i]))
+            {
+                throw_error("foreign callable `" + callable.symbol +
+                            "` argument " + std::to_string(i) +
+                            " must be numeric (pointer marshalling is not "
+                            "supported yet)");
+                return value{};
+            }
+            args[i] = as_integer(arguments[i]);
+        }
+        using fn0 = int64_t (*)();
+        using fn1 = int64_t (*)(int64_t);
+        using fn2 = int64_t (*)(int64_t, int64_t);
+        using fn3 = int64_t (*)(int64_t, int64_t, int64_t);
+        using fn4 = int64_t (*)(int64_t, int64_t, int64_t, int64_t);
+        using fn5 = int64_t (*)(int64_t, int64_t, int64_t, int64_t, int64_t);
+        using fn6 =
+            int64_t (*)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+        using fn7 = int64_t (*)(int64_t, int64_t, int64_t, int64_t, int64_t,
+                                int64_t, int64_t);
+        using fn8 = int64_t (*)(int64_t, int64_t, int64_t, int64_t, int64_t,
+                                int64_t, int64_t, int64_t);
+        int64_t result = 0;
+        switch (arguments.size())
+        {
+        case 0:
+            result = reinterpret_cast<fn0>(callable.fn)();
+            break;
+        case 1:
+            result = reinterpret_cast<fn1>(callable.fn)(args[0]);
+            break;
+        case 2:
+            result = reinterpret_cast<fn2>(callable.fn)(args[0], args[1]);
+            break;
+        case 3:
+            result =
+                reinterpret_cast<fn3>(callable.fn)(args[0], args[1], args[2]);
+            break;
+        case 4:
+            result = reinterpret_cast<fn4>(callable.fn)(args[0], args[1],
+                                                       args[2], args[3]);
+            break;
+        case 5:
+            result = reinterpret_cast<fn5>(callable.fn)(
+                args[0], args[1], args[2], args[3], args[4]);
+            break;
+        case 6:
+            result = reinterpret_cast<fn6>(callable.fn)(
+                args[0], args[1], args[2], args[3], args[4], args[5]);
+            break;
+        case 7:
+            result = reinterpret_cast<fn7>(callable.fn)(
+                args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
+            break;
+        case 8:
+            result = reinterpret_cast<fn8>(callable.fn)(
+                args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7]);
+            break;
+        }
+        return value{result};
     }
 
     // -- io helpers ---------------------------------------------------------
@@ -2606,6 +2825,13 @@ private:
                 case Opcode::JMP:
                     current.pc = jump_target(current, read_scalar<uint32_t>(current));
                     break;
+                case Opcode::HINT_BRANCH:
+                {
+                    const uint8_t expected_taken = read_u8(current);
+                    // Hint applies to the immediately following JMP_IF_* opcode.
+                    predictor.seed_static_hint(current.pc, expected_taken != 0);
+                    break;
+                }
                 case Opcode::JMP_IF_FALSE:
                 {
                     const auto target = read_scalar<uint32_t>(current);

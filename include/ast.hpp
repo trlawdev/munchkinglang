@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <ostream>
@@ -518,11 +519,20 @@ namespace munx::ast
         std::vector<std::unique_ptr<stmt_node>> statements; ///< Body statements.
     };
 
+    /// Static branch-predictor hint from `likely` / `unlikely` on an `if` condition.
+    enum class branch_hint : uint8_t
+    {
+        None = 0,     ///< No static hint.
+        Likely = 1,   ///< Then-arm is expected to be taken (`likely(cond)`).
+        Unlikely = 2, ///< Then-arm is expected not to be taken (`unlikely(cond)`).
+    };
+
     /// One `if` / `else if` arm.
     struct if_branch
     {
         std::unique_ptr<expr_node> condition; ///< Branch condition.
         std::unique_ptr<block_stmt> body;     ///< Branch body.
+        branch_hint hint{branch_hint::None}; ///< Optional `likely` / `unlikely` hint.
     };
 
     /// `if` / `else if` / `else` chain.

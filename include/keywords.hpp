@@ -47,6 +47,7 @@ namespace munx
             "channel",
             "reflexpr",
             "members",
+            "function_members",
             "meta_params",
             "params",
             "reflect_for",
@@ -54,6 +55,9 @@ namespace munx
             "typeid",
             "default",
             "of",
+            "this_package",
+            "likely",
+            "unlikely",
         };
         return k;
     }

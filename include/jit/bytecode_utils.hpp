@@ -189,6 +189,9 @@ struct bytecode_cursor
         case Opcode::MONITOR_ENTER:
             read_scalar<uint32_t>();
             break;
+        case Opcode::HINT_BRANCH:
+            read_u8();
+            break;
         case Opcode::CALL:
             read_u8();
             break;

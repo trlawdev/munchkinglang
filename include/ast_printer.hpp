@@ -561,6 +561,14 @@ namespace munx
                 indent();
                 write_line("(then");
                 indent();
+                if (if_stmt.then_branch->hint == ast::branch_hint::Likely)
+                {
+                    write_line("(likely)");
+                }
+                else if (if_stmt.then_branch->hint == ast::branch_hint::Unlikely)
+                {
+                    write_line("(unlikely)");
+                }
                 print_expr(*if_stmt.then_branch->condition);
                 print_block(*if_stmt.then_branch->body);
                 dedent();
@@ -569,6 +577,14 @@ namespace munx
                 {
                     write_line("(else-if");
                     indent();
+                    if (branch->hint == ast::branch_hint::Likely)
+                    {
+                        write_line("(likely)");
+                    }
+                    else if (branch->hint == ast::branch_hint::Unlikely)
+                    {
+                        write_line("(unlikely)");
+                    }
                     print_expr(*branch->condition);
                     print_block(*branch->body);
                     dedent();

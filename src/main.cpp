@@ -6,6 +6,11 @@
 #include "../include/errors.hpp"
 #include "../include/keywords.hpp"
 #include "../include/lexer.hpp"
+#include "../include/isa/mx32_emitter.hpp"
+#include "../include/isa/mx32_pipeline.hpp"
+#include "../include/isa/mx32_serialize.hpp"
+#include "../include/native/mir_builder.hpp"
+#include "../include/native/mir_optimizer.hpp"
 #include "../include/native/native_compiler.hpp"
 #include "../include/parser.hpp"
 #include "../include/platform.hpp"
@@ -47,8 +52,11 @@ namespace
     void print_usage(const char *program)
     {
         std::cerr << "Usage: " << program << " <file.mx>\n"
-                  << "       " << program << " --native [-o out] [--backend custom|llvm] <file.mx>\n"
-                  << "       " << program << " --run [--interp] <file.mx|file.mxb> [args ...]\n"
+                  << "       " << program
+                  << " --native [-o out] [--backend custom|llvm] [--asm] "
+                     "[--arch x86_64|aarch64] <file.mx>\n"
+                  << "       " << program
+                  << " --run [--interp] [--mx32] <file.mx|file.mxb> [args ...]\n"
                   << "       " << program << " --ast <file.mx>\n"
                   << "       " << program << " --tokens <file.mx>\n"
                   << "       " << program << " --decode <file.mxb>\n"
@@ -58,10 +66,14 @@ namespace
                   << "\n"
                   << "Compile munx source file(s) to bytecode (<file>.mxb).\n"
                   << "Use --native to emit a host native executable (subset of the language).\n"
+                  << "  --asm lowers MIR to machine code + object (ELF/Mach-O/COFF) then links.\n"
+                  << "  --arch selects the ISA for --asm (default: host).\n"
                   << "Use --run to execute a program on the munx VM; a `.mx`\n"
                   << "  file is compiled first, and trailing arguments become argv.\n"
                   << "Use --interp with --run to force the bytecode interpreter\n"
                   << "  instead of the default threaded JIT (also MUNX_VM_JIT=0).\n"
+                  << "Use --mx32 with --run to execute via the fixed-length mx32 ISA\n"
+                  << "  pipeline (MUNX_VM_PIPELINE=scalar|inorder|ooo).\n"
                   << "Use --ast to print the AST instead of compiling.\n"
                   << "Use --tokens to print the token stream instead.\n"
                   << "Use --decode to validate and disassemble bytecode.\n"
@@ -141,7 +153,7 @@ namespace
 
 bool compile_native_file(const std::filesystem::path &source_path,
                              const std::filesystem::path &output_path,
-                             munx::native::backend_kind backend)
+                             munx::native::compile_options opts)
     {
         const munx::error compile_error = munx::run_compile_boundary([&] {
             const std::string source = read_file_or_fail(source_path);
@@ -150,7 +162,7 @@ bool compile_native_file(const std::filesystem::path &source_path,
             munx::ast::program program = parse.parse_program();
             munx::expand_generics_and_reflexpr(program);
             munx::native::compile_to_executable(source_path.parent_path(), program,
-                                                output_path, backend);
+                                                output_path, opts);
             std::cout << "wrote " << output_path.string() << '\n';
         });
         if (!compile_error.ok())
@@ -196,11 +208,34 @@ bool compile_native_file(const std::filesystem::path &source_path,
     }
 
     int run_program(const std::filesystem::path &path,
-                    std::vector<std::string> arguments)
+                    std::vector<std::string> arguments, bool mx32_isa)
     {
         std::filesystem::path image = path;
         int exit_status = 1;
         const munx::error compile_error = munx::run_compile_boundary([&] {
+            if (mx32_isa)
+            {
+                std::filesystem::path image_path = path;
+                if (path.extension() != ".mxb")
+                {
+                    const std::string source = read_file_or_fail(path);
+                    munx::lexer lex{source, munx::keywords(), path};
+                    munx::parser parse{lex.read_tokens(), path};
+                    munx::ast::program program = parse.parse_program();
+                    munx::expand_generics_and_reflexpr(program);
+                    munx::native::mir_builder builder;
+                    munx::native::mir::module mod =
+                        builder.build(path.parent_path(), program);
+                    mod = munx::native::mir::optimize_mir(std::move(mod));
+                    munx::isa::mx_module mx = munx::isa::emit_mx32(mod);
+                    image_path.replace_extension(".mxb");
+                    munx::isa::write_mx32_mxb(mx, program.package_name, image_path);
+                    std::cout << "wrote " << image_path.string() << " (mx32/v9)\n";
+                }
+                exit_status =
+                    munx::vm::run_bytecode_file(image_path, arguments);
+                return;
+            }
             if (path.extension() != ".mxb")
             {
                 const std::string source = read_file_or_fail(path);
@@ -246,11 +281,14 @@ int main(int argc, char *argv[])
     bool decode_bytecode_flag = false;
     bool decompile_bytecode_flag = false;
     bool run_program_flag = false;
+    bool mx32_flag = false;
     bool native_flag = false;
     bool files_mode = false;
     std::filesystem::path native_output;
     bool backend_explicit = false;
-    munx::native::backend_kind native_backend = munx::native::backend_kind::custom;
+    bool asm_explicit = false;
+    bool arch_explicit = false;
+    munx::native::compile_options native_opts;
     std::vector<std::filesystem::path> source_paths;
     std::vector<std::string> program_arguments;
 
@@ -269,9 +307,35 @@ int main(int argc, char *argv[])
         {
             run_program_flag = true;
         }
+        else if (arg == "--mx32")
+        {
+            mx32_flag = true;
+        }
         else if (arg == "--native")
         {
             native_flag = true;
+        }
+        else if (arg == "--asm")
+        {
+            asm_explicit = true;
+            native_opts.backend = munx::native::backend_kind::asm_;
+        }
+        else if (arg == "--arch")
+        {
+            if (i + 1 >= argc)
+            {
+                std::cerr << "--arch requires x86_64 or aarch64\n";
+                print_usage(argv[0]);
+                return 1;
+            }
+            const std::string arch{argv[++i]};
+            if (!munx::native::asm_backend::parse_arch(arch, native_opts.asm_arch))
+            {
+                std::cerr << "Unknown --arch: " << arch << '\n';
+                print_usage(argv[0]);
+                return 1;
+            }
+            arch_explicit = true;
         }
         else if (arg == "-o")
         {
@@ -287,7 +351,7 @@ int main(int argc, char *argv[])
         {
             if (i + 1 >= argc)
             {
-                std::cerr << "--backend requires custom or llvm\n";
+                std::cerr << "--backend requires custom, llvm, or asm\n";
                 print_usage(argv[0]);
                 return 1;
             }
@@ -295,11 +359,15 @@ int main(int argc, char *argv[])
             backend_explicit = true;
             if (be == "custom")
             {
-                native_backend = munx::native::backend_kind::custom;
+                native_opts.backend = munx::native::backend_kind::custom;
             }
             else if (be == "llvm")
             {
-                native_backend = munx::native::backend_kind::llvm;
+                native_opts.backend = munx::native::backend_kind::llvm;
+            }
+            else if (be == "asm")
+            {
+                native_opts.backend = munx::native::backend_kind::asm_;
             }
             else
             {
@@ -390,6 +458,33 @@ int main(int argc, char *argv[])
         print_usage(argv[0]);
         return 1;
     }
+    if (asm_explicit && !native_flag)
+    {
+        std::cerr << "--asm is only valid with --native\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (arch_explicit && !native_flag)
+    {
+        std::cerr << "--arch is only valid with --native\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (backend_explicit && asm_explicit &&
+        native_opts.backend != munx::native::backend_kind::asm_)
+    {
+        std::cerr << "--asm conflicts with --backend " 
+                  << (native_opts.backend == munx::native::backend_kind::llvm
+                          ? "llvm"
+                          : "custom")
+                  << '\n';
+        return 1;
+    }
+    if (arch_explicit && native_opts.backend != munx::native::backend_kind::asm_)
+    {
+        std::cerr << "--arch requires --asm (or --backend asm)\n";
+        return 1;
+    }
     if (!native_output.empty() && !native_flag)
     {
         std::cerr << "-o is only valid with --native\n";
@@ -397,9 +492,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    if (mx32_flag && !run_program_flag && !native_flag)
+    {
+        std::cerr << "--mx32 requires --run (or use with native later)\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+
     if (run_program_flag)
     {
-        return run_program(source_paths.front(), std::move(program_arguments));
+        return run_program(source_paths.front(), std::move(program_arguments),
+                           mx32_flag);
     }
 
     if (native_flag)
@@ -411,21 +514,16 @@ int main(int argc, char *argv[])
             return 1;
         }
 #if MUNX_NATIVE_CUSTOM && MUNX_NATIVE_LLVM
-        // both: default custom; --backend selects
+        // both: default custom; --backend / --asm selects
 #elif MUNX_NATIVE_LLVM && !MUNX_NATIVE_CUSTOM
-        if (!backend_explicit)
+        if (!backend_explicit && !asm_explicit)
         {
-            native_backend = munx::native::backend_kind::llvm;
+            native_opts.backend = munx::native::backend_kind::llvm;
         }
-#elif !MUNX_NATIVE_CUSTOM && !MUNX_NATIVE_LLVM
+#elif !MUNX_NATIVE_CUSTOM && !MUNX_NATIVE_LLVM && !MUNX_NATIVE_ASM
 #error "native backend configuration is empty"
 #endif
-        if (backend_explicit && !munx::native::backend_available(native_backend))
-        {
-            std::cerr << "native backend not available in this munxc build\n";
-            return 1;
-        }
-        if (!munx::native::backend_available(native_backend))
+        if (!munx::native::backend_available(native_opts.backend))
         {
             std::cerr << "native backend not available in this munxc build\n";
             return 1;
@@ -439,8 +537,7 @@ int main(int argc, char *argv[])
             out += ".exe";
 #endif
         }
-        return compile_native_file(source_paths.front(), out, native_backend) ? 0
-                                                                              : 1;
+        return compile_native_file(source_paths.front(), out, native_opts) ? 0 : 1;
     }
 
     const bool label_file = source_paths.size() > 1;

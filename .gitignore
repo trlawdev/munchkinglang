@@ -9,6 +9,7 @@
 *.o
 *.out
 *.mxb
+*.so
 
 # CMake
 CMakeCache.txt

@@ -46,6 +46,9 @@ if refl_func.is_meta_function { //is_meta_function checks if a FunctionReflectio
 func_params = ::params(refl_func) // ::params is a keyword that takes a ReflectionArtifact of only function types, return FunctionParamReflectionAritifactArray
 ::reflect_for(param of func_params) {
     println("param: {", param.name, ",", param.type, "}")
+    if (param.type.is_trait_type) { // check if the type of the param is a trait, 
+    println("its a trait type: ", param.type.name)
+    }
 }
 
 refl_package = ::reflexpr(this_package) //this_package is a keyword that specifies this package, ::reflexpr should be able to accept imported package names except the current package name
@@ -89,11 +92,54 @@ func_handle = resolve_callable(library_handle, "add_int") // resolve_callable re
 value = func_handle(2, 3) // calles the resolved function underneath and mashalls munx value in c value
 println("add_int(2, 3) = ", value)
 //value = 5
-// 
+
+func_handle_pointer = resolve_callable(library_handle, "set_int") // take set_int to be a function of signature void set_int(int*)
+int_value = 100
+func_handle_pointer(pointer(int_value)) // creates a pointer for the passed value, int_value is convert to the native int
+
 close_library(library_handle)
 
 //I'll add support for pointers later
 
 
+trait Human { // trait is a keyword that creates some sort of interface
+    name: string
+}
 
 
+
+func print_name(human: Human) {
+    println("humans name is: ", human.name)
+}
+
+
+object Child {
+    name: string,
+    age: int <constraint>[_ <= 12]
+}
+
+object Teenager {
+    name: string,
+    age: int <constraint>[_ >= 13 && _ <= 19] // new syntax for adding constraits to field values of an object type
+}
+
+object Adult {
+    name: string,
+    age: int <constraint>[_ > 19]
+}
+
+object DoesNotMatchByName {
+    dob: string
+}
+
+object DoesNotMatchByType {
+    name: int
+}
+
+object DoesNotMatchByNameAndType {
+    _some: float
+}
+
+print_name(/* any value passed here */) // will fail DoesNotMatchByName, DoesNotMatchByType, DoesNotMatchByNameAndType since they dont match the shape of the
+// trait type
+// for the other values, Child, Teenager and Adult they will match since they match the needed field types in the language

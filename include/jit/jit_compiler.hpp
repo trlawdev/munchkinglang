@@ -1,9 +1,13 @@
 #pragma once
 
 #include "bytecode_optimizer.hpp"
-#include <functional>
+#include "execution_profile.hpp"
 #include <memory>
+#include <span>
+#include <string_view>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace munx::vm
@@ -15,7 +19,34 @@ struct frame;
 namespace munx::vm::jit
 {
 
-using jit_step = std::function<void(virtual_machine &, frame &, size_t instruction_pc)>;
+/// Direct-call handler: function pointer + heap payload (no std::function).
+struct jit_step
+{
+    using call_fn = void (*)(void *, virtual_machine &, frame &, size_t);
+
+    call_fn call{nullptr};
+    std::shared_ptr<void> self;
+
+    void operator()(virtual_machine &vm, frame &current, size_t instruction_pc) const
+    {
+        call(self.get(), vm, current, instruction_pc);
+    }
+};
+
+/// Box a movable callable into a @ref jit_step.
+template <typename F>
+jit_step make_step(F &&fn)
+{
+    using Fn = std::decay_t<F>;
+    auto heap = std::make_shared<Fn>(std::forward<F>(fn));
+    jit_step step;
+    step.self = heap;
+    step.call = [](void *self, virtual_machine &vm, frame &current,
+                   size_t instruction_pc) {
+        (*static_cast<Fn *>(self))(vm, current, instruction_pc);
+    };
+    return step;
+}
 
 /// Threaded JIT dispatch table for one code blob (function body or package init).
 struct compiled_unit

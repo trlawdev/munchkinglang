@@ -3,6 +3,9 @@
 #include "platform.hpp"
 #include "Opcode.hpp"
 #include "bytecode_decoder.hpp"
+#include "isa/mx32.hpp"
+#include "isa/mx32_pipeline.hpp"
+#include "isa/mx32_serialize.hpp"
 #include "jit/bytecode_utils.hpp"
 #include "jit/branch_predictor.hpp"
 #include "jit/execution_profile.hpp"
@@ -66,6 +69,9 @@ struct program_image
     std::vector<std::unique_ptr<function_def>> functions;
     std::vector<package_def> packages; ///< Imports first, entry point last.
     std::string entry_package;
+    uint16_t bytecode_version{8};
+    /// Populated for MX v9 (fixed-length mx32 ISA) images.
+    std::optional<isa::mx_module> mx32;
 };
 
 /// @return Parameter names bound by the STORE prologue of @p code.
@@ -200,10 +206,23 @@ inline program_image load_program(const std::filesystem::path &path)
 
     mx_program_header header{};
     std::memcpy(&header, image.bytes.data(), sizeof header);
+    image.bytecode_version = header.mx_bytecode_version;
     image.strings = std::string_view{
         reinterpret_cast<const char *>(image.bytes.data() +
                                        header.string_table_offset),
         header.string_table_length};
+
+    if (header.mx_bytecode_version == 9)
+    {
+        const auto &entry = header.entry_point_package_descriptor;
+        image.entry_package = std::string{
+            image.strings.substr(header.package_name_offset,
+                                 header.package_name_length)};
+        image.mx32 = isa::deserialize_mx32(
+            image.bytes.data() + entry.package_bytecode_offset,
+            entry.package_bytecode_length);
+        return image;
+    }
 
     const auto blob = [&image](size_t offset, size_t length) {
         return std::span<const std::byte>{image.bytes.data() + offset, length};
@@ -3176,7 +3195,20 @@ inline int run_bytecode_file(const std::filesystem::path &path,
 #if MUNX_VM_HAS_NAMED_PIPES
     pipe_hub::client::session hub_session;
 #endif
-    virtual_machine machine{load_program(path), arguments};
+    program_image image = load_program(path);
+    if (image.mx32.has_value())
+    {
+        isa::mx_cpu cpu;
+        cpu.bind(*image.mx32);
+        cpu.argv = arguments;
+        auto mode = isa::pipeline_mode_from_env();
+        if (jit::jit_force_interpreter())
+        {
+            mode = isa::pipeline_mode::scalar;
+        }
+        return cpu.run(mode);
+    }
+    virtual_machine machine{std::move(image), arguments};
     return machine.run();
 }
 

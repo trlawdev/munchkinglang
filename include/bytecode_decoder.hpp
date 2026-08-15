@@ -1,6 +1,8 @@
 #pragma once
 
 #include "bytecode_compiler.hpp"
+#include "isa/mx32.hpp"
+#include "isa/mx32_serialize.hpp"
 #include <cctype>
 #include <iomanip>
 #include <limits>
@@ -29,12 +31,13 @@ public:
         {
             fail("invalid bytecode signature (expected MX)");
         }
-        if (header_.mx_bytecode_version != current_mx_bytecode_version)
+        if (header_.mx_bytecode_version != current_mx_bytecode_version &&
+            header_.mx_bytecode_version != 9)
         {
             fail("unsupported bytecode version " +
                  std::to_string(header_.mx_bytecode_version) +
                  " (decoder supports " +
-                 std::to_string(current_mx_bytecode_version) + ")");
+                 std::to_string(current_mx_bytecode_version) + " and 9/mx32)");
         }
         require_range(header_.string_table_offset, header_.string_table_length,
                       "string table");
@@ -350,6 +353,28 @@ private:
     void decode_code(size_t file_offset, size_t length,
                      std::string_view indent)
     {
+        if (length >= 4 &&
+            isa::is_mx32_blob(image_.data() + file_offset, length))
+        {
+            out_ << indent << "; mx32 fixed-length ISA blob (" << length
+                 << " bytes)\n";
+            const isa::mx_module mod =
+                isa::deserialize_mx32(image_.data() + file_offset, length);
+            out_ << indent << "; entry_pc=" << mod.entry_pc
+                 << " words=" << mod.code.size()
+                 << " funcs=" << mod.functions.size()
+                 << " pool=" << mod.pool.size() << '\n';
+            for (size_t i = 0; i < mod.code.size(); ++i)
+            {
+                const uint32_t w = mod.code[i];
+                const isa::mx_op op = isa::dec_op(w);
+                out_ << indent << std::setw(6) << i << "  " << std::left
+                     << std::setw(12) << isa::op_name(op) << std::right
+                     << " 0x" << std::hex << w << std::dec << '\n';
+            }
+            return;
+        }
+
         instruction_reader reader{*this, file_offset, length};
         while (!reader.done())
         {

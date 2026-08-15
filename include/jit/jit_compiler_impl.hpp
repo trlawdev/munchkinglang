@@ -43,9 +43,9 @@ inline void compile_handlers(compiled_unit &unit, virtual_machine &,
         const size_t insn_pc = cursor.pc;
         const auto opcode = static_cast<Opcode>(cursor.read_u8());
 
-        auto bind = [&](jit_step step) {
+        auto bind = [&](auto &&step) {
             unit.handler_at_pc.emplace(insn_pc, unit.handlers.size());
-            unit.handlers.push_back(std::move(step));
+            unit.handlers.push_back(make_step(std::forward<decltype(step)>(step)));
         };
 
         switch (opcode)

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <sys/wait.h>
@@ -211,6 +212,53 @@ inline void link_generated_ll(const std::string &ll_source,
     if (rc != 0)
     {
         fail_compile("native: LLVM IR compile failed:\n" + err);
+        return;
+    }
+}
+
+/// Link a relocatable object (from --native --asm) with munx_rt into an executable.
+inline void link_generated_object(const std::vector<uint8_t> &object_bytes,
+                                  const std::filesystem::path &output_exe)
+{
+    std::filesystem::path value_c;
+    std::filesystem::path print_c;
+    std::filesystem::path pipe_c;
+    ensure_runtime(value_c, print_c, pipe_c);
+    const std::filesystem::path rt = runtime_dir();
+
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("munx_native_" + std::to_string(stamp) + ".o");
+
+    {
+        std::ofstream out{tmp, std::ios::binary};
+        if (!out)
+        {
+            fail_compile("native: could not write temp object file");
+            return;
+        }
+        out.write(reinterpret_cast<const char *>(object_bytes.data()),
+                  static_cast<std::streamsize>(object_bytes.size()));
+    }
+
+    if (active_compile_context != nullptr && active_compile_context->failed())
+    {
+        return;
+    }
+
+    const std::string cc = find_host_cc();
+    std::ostringstream cmd;
+    cmd << cc << " -O2 -pthread -I\"" << rt.string() << "\" \"" << tmp.string()
+        << "\" \"" << value_c.string() << "\" \"" << print_c.string() << "\" \""
+        << pipe_c.string() << "\" -o \"" << output_exe.string() << "\"";
+
+    std::string err;
+    const int rc = run_command(cmd.str(), err);
+    std::error_code ec;
+    std::filesystem::remove(tmp, ec);
+    if (rc != 0)
+    {
+        fail_compile("native: asm object link failed:\n" + err);
         return;
     }
 }

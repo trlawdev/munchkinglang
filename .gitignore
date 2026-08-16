@@ -10,6 +10,7 @@
 *.out
 *.mxb
 *.so
+build-clang22/
 
 # CMake
 CMakeCache.txt

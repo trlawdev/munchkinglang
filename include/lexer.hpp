@@ -427,6 +427,9 @@ namespace munx
             case 'n':
                 advance_no_newline();
                 return '\n';
+            case 'r':
+                advance_no_newline();
+                return '\r';
             case 't':
                 advance_no_newline();
                 return '\t';

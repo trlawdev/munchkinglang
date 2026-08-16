@@ -1,0 +1,39 @@
+package accesslog
+load_package types
+
+// Combined Log Format access log for the single-threaded accept loop.
+// File is opened once at start and kept open (open(..., out) truncates).
+
+logging_enabled = false
+log_handle = open(io_type::tty, out)
+
+func log_access(peer: string, method: string, path: string, version: string,
+                status: int, bytes: int, host: string): void {
+    if !logging_enabled {
+        return
+    }
+    line = concat(
+        peer, " - - [", cast[string](process.id()), "] \"",
+        method, " ", path, " ", version, "\" ",
+        cast[string](status), " ", cast[string](bytes), " \"",
+        host, "\" \"fileserve\"\n"
+    )
+    write(log_handle, line)
+}
+
+func start_access_log(path: string): void {
+    if path == "" {
+        logging_enabled = false
+        return
+    }
+    log_handle = open(io_type::file, path, out)
+    write(log_handle, concat("# fileserve access log pid=", cast[string](process.id()), "\n"))
+    logging_enabled = true
+}
+
+func stop_access_log(): void {
+    if logging_enabled {
+        close(log_handle)
+    }
+    logging_enabled = false
+}

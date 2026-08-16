@@ -20,11 +20,13 @@ namespace munx
         std::vector<token> tokens_;       ///< Token stream (includes trailing END).
         std::size_t token_pos_{0};        ///< Index of the current lookahead token.
         std::filesystem::path path_;      ///< Source path for diagnostics / locations.
+        bool recover_{false};             ///< Analyze-mode error recovery.
 
     public:
         /// Take ownership of @p tokens for the source file at @p path.
-        parser(std::vector<token> tokens, std::filesystem::path path)
-            : tokens_(std::move(tokens)), path_(std::move(path))
+        parser(std::vector<token> tokens, std::filesystem::path path,
+               bool recover = false)
+            : tokens_(std::move(tokens)), path_(std::move(path)), recover_(recover)
         {
         }
 
@@ -56,8 +58,21 @@ namespace munx
 
             while (!at_end())
             {
-                prog.statements.emplace_back(parse_statement());
+                const std::size_t before = token_pos_;
+                auto stmt = parse_statement();
+                if (stmt != nullptr)
+                {
+                    prog.statements.emplace_back(std::move(stmt));
+                }
                 match(token_type::SEMICOLON);
+                if (recover_ && token_pos_ == before && !at_end())
+                {
+                    synchronize();
+                    if (token_pos_ == before)
+                    {
+                        advance();
+                    }
+                }
             }
             return prog;
         }
@@ -144,12 +159,36 @@ namespace munx
         /// Record a compile error at @p t with message @p msg.
         void error(const token &t, const std::string &msg)
         {
-            fail_compile(path_.string() + ':' + std::to_string(t.line) +
-                                    ':' + std::to_string(t.column) + ": error: " + msg);
+            fail_compile_at(path_.string(), t.line, t.column, msg);
         }
 
         /// Record a compile error at the current token.
         void error_here(const std::string &msg) { error(cur(), msg); }
+
+        /// Skip tokens until a likely statement boundary (analyze recovery).
+        void synchronize()
+        {
+            while (!at_end())
+            {
+                if (check(token_type::SEMICOLON))
+                {
+                    advance();
+                    return;
+                }
+                if (check(token_type::RBRACE))
+                {
+                    return;
+                }
+                if (check_kw("func") || check_kw("enum") || check_kw("object") ||
+                    check_kw("trait") || check_kw("if") || check_kw("loop") ||
+                    check_kw("match") || check_kw("monitor") || check_kw("lock") ||
+                    check_kw("return") || check_kw("break") || check_kw("join"))
+                {
+                    return;
+                }
+                advance();
+            }
+        }
 
         /// Require kind @p type or throw with @p msg; return the consumed token.
         const token &expect(token_type type, const char *msg)
@@ -159,6 +198,10 @@ namespace munx
                 return advance();
             }
             error_here(msg);
+            if (recover_ && !at_end() && cur().type != type)
+            {
+                // Leave current token for recovery; callers may synchronize.
+            }
             return cur();
         }
 
@@ -515,8 +558,10 @@ namespace munx
                 if (match(token_type::DOT))
                 {
                     const auto loc = expr->loc;
+                    const auto member_loc = here();
+                    const std::string member = expect_name();
                     expr = ast::make_expr_ptr(
-                        ast::member_expr{std::move(expr), expect_name()}, loc);
+                        ast::member_expr{std::move(expr), member, member_loc}, loc);
                 }
                 else if (check(token_type::LT) && looks_like_call_type_args())
                 {
@@ -709,8 +754,10 @@ namespace munx
                 const std::string name = text(advance());
                 if (match(token_type::SCOPE))
                 {
+                    const auto member_loc = here();
+                    const std::string member = expect_name();
                     return ast::make_expr_ptr(
-                        ast::enum_access_expr{name, expect_name()}, loc);
+                        ast::enum_access_expr{name, member, loc, member_loc}, loc);
                 }
                 return ast::make_expr_ptr(ast::identifier{name}, loc);
             }
@@ -885,7 +932,11 @@ namespace munx
             block->loc = loc;
             while (!check(token_type::RBRACE) && !at_end())
             {
-                block->statements.push_back(parse_statement());
+                auto stmt = parse_statement();
+                if (stmt != nullptr)
+                {
+                    block->statements.push_back(std::move(stmt));
+                }
                 match(token_type::SEMICOLON);
             }
             expect(token_type::RBRACE, "expected `}`");
@@ -922,11 +973,12 @@ namespace munx
                 advance();
                 return parse_enum(loc);
             }
-            if (check_kw("object"))
+            if (check_kw("object") || check_kw("trait"))
             {
                 const auto loc = here();
+                const bool is_trait = check_kw("trait");
                 advance();
-                return parse_object(loc);
+                return parse_object(loc, is_trait);
             }
             if (check_kw("if"))
             {
@@ -1025,7 +1077,11 @@ namespace munx
                 block.loc = loc;
                 while (!check(token_type::RBRACE) && !at_end())
                 {
-                    block.statements.push_back(parse_statement());
+                    auto inner = parse_statement();
+                    if (inner != nullptr)
+                    {
+                        block.statements.push_back(std::move(inner));
+                    }
                     match(token_type::SEMICOLON);
                 }
                 expect(token_type::RBRACE, "expected `}`");
@@ -1143,6 +1199,13 @@ namespace munx
                     assignment.targets = std::move(targets);
                     assignment.op = op;
                     assignment.value = parse_expression();
+                    if (assignment.value == nullptr && recover_)
+                    {
+                        // Incomplete RHS while typing — keep a placeholder so
+                        // expanders / checkers can still see the left-hand side.
+                        assignment.value =
+                            ast::make_expr_ptr(ast::identifier{}, loc);
+                    }
                     maybe_attach_lambda_call(assignment.value);
                     return ast::make_stmt_ptr(std::move(assignment), loc);
                 }
@@ -1150,6 +1213,11 @@ namespace munx
             }
 
             auto expression = parse_expression();
+            if (expression == nullptr)
+            {
+                // Recover mode: incomplete expression statement.
+                return nullptr;
+            }
             maybe_attach_lambda_call(expression);
             const auto expr_loc = expression->loc;
             return ast::make_stmt_ptr(ast::expr_stmt{std::move(expression)}, expr_loc);
@@ -1158,7 +1226,11 @@ namespace munx
         /// If a `(…)` follows a lambda expression, wrap it as a call.
         void maybe_attach_lambda_call(std::unique_ptr<ast::expr_node> &expr)
         {
-            if (expr->type == ast::expr_type::Lambda && check(token_type::LPAREN))
+            if (expr == nullptr || expr->type != ast::expr_type::Lambda ||
+                !check(token_type::LPAREN))
+            {
+                return;
+            }
             {
                 const auto loc = expr->loc;
                 advance();
@@ -1223,6 +1295,7 @@ namespace munx
         std::unique_ptr<ast::stmt_node> parse_func(const ast::source_loc &loc)
         {
             ast::func_decl func;
+            func.name_loc = here();
             func.name = expect_name();
             if (match(token_type::LT))
             {
@@ -1238,8 +1311,15 @@ namespace munx
             expect(token_type::LPAREN, "expected `(` after function name");
             func.parameters = parse_params();
             expect(token_type::RPAREN, "expected `)` after parameters");
-            expect(token_type::COLON, "expected `:` before return type");
-            func.return_type = parse_type();
+            if (match(token_type::COLON))
+            {
+                func.return_type = parse_type();
+            }
+            else
+            {
+                func.return_type = std::make_unique<ast::type_node>(
+                    ast::type_node::make_primitive(ast::primitive_kind::Void, loc));
+            }
             func.body = parse_block();
             return ast::make_stmt_ptr(std::move(func), loc);
         }
@@ -1248,6 +1328,7 @@ namespace munx
         std::unique_ptr<ast::stmt_node> parse_enum(const ast::source_loc &loc)
         {
             ast::enum_decl decl;
+            decl.name_loc = here();
             decl.name = expect_name();
             expect(token_type::LBRACE, "expected `{` after enum name");
             if (!check(token_type::RBRACE))
@@ -1261,12 +1342,17 @@ namespace munx
             return ast::make_stmt_ptr(std::move(decl), loc);
         }
 
-        /// Parse an `object` declaration (keyword already consumed).
-        std::unique_ptr<ast::stmt_node> parse_object(const ast::source_loc &loc)
+        /// Parse an `object` / `trait` declaration (keyword already consumed).
+        std::unique_ptr<ast::stmt_node> parse_object(const ast::source_loc &loc,
+                                                     bool is_trait = false)
         {
             ast::object_decl object;
+            object.is_trait = is_trait;
+            object.name_loc = here();
             object.name = expect_name();
-            expect(token_type::LBRACE, "expected `{` after object name");
+            expect(token_type::LBRACE,
+                   is_trait ? "expected `{` after trait name"
+                            : "expected `{` after object name");
             if (!check(token_type::RBRACE))
             {
                 do
@@ -1276,10 +1362,27 @@ namespace munx
                     field.name = expect_name();
                     expect(token_type::COLON, "expected `:` after field name");
                     field.type = parse_type();
+                    // Optional: `int <constraint>[_ <= 12]`
+                    if (match(token_type::LT))
+                    {
+                        if (!check_kw("constraint"))
+                        {
+                            error_here("expected `constraint` after `<`");
+                        }
+                        advance();
+                        expect(token_type::GT, "expected `>` after `constraint`");
+                        expect(token_type::LBRACKET,
+                               "expected `[` after `<constraint>`");
+                        field.constraint = parse_expression();
+                        expect(token_type::RBRACKET,
+                               "expected `]` after constraint expression");
+                    }
                     object.fields.push_back(std::move(field));
                 } while (match(token_type::COMMA));
             }
-            expect(token_type::RBRACE, "expected `}` after object fields");
+            expect(token_type::RBRACE,
+                   is_trait ? "expected `}` after trait fields"
+                            : "expected `}` after object fields");
             return ast::make_stmt_ptr(std::move(object), loc);
         }
 

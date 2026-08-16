@@ -27,6 +27,8 @@ namespace munx
             "case",
             "enum",
             "object",
+            "trait",
+            "constraint",
             "tuple",
             "alloc",
             "delete",

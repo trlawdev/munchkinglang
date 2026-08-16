@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Compare stack VM (interp / JIT) vs mx32 pipelines (scalar / inorder / ooo).
+# Compare stack VM interpreter vs threaded JIT.
 #
 # Env:
 #   RUNS=5                 repeats per cell (avg)
 #   LIMIT=1000000          loop trip count (nested uses isqrt(LIMIT)^2)
 #   SAMPLES="..."          which benches
-#   INCLUDE_SLOW=1         include mx-inorder + mx-ooo-rob (very slow at high LIMIT)
 #   MUNXC=./build/munxc
 set -euo pipefail
 
@@ -25,16 +24,10 @@ fi
 RUNS="${RUNS:-5}"
 LIMIT="${LIMIT:-1000000}"
 SAMPLES="${SAMPLES:-branch_count branch_nested branch_mixed branch_random}"
-INCLUDE_SLOW="${INCLUDE_SLOW:-0}"
 OUT="${OUT:-${TMPDIR:-/tmp}/munx-bench-pipeline-$$}"
 mkdir -p "$OUT"
 
 export MUNX_PIPE_HUB=0
-
-# At large trip counts, pipeline simulators dominate wall time; opt-in.
-if [[ "$LIMIT" -ge 10000000 && "$INCLUDE_SLOW" != "1" ]]; then
-  INCLUDE_SLOW=0
-fi
 
 ms_now() { date +%s%N; }
 
@@ -90,19 +83,12 @@ prepare_src() {
 }
 
 echo "munxc: $MUNXC"
-echo "runs:  $RUNS   limit: $LIMIT   slow-pipes: $INCLUDE_SLOW"
+echo "runs:  $RUNS   limit: $LIMIT"
 echo "out:   $OUT"
 echo
 
-if [[ "$INCLUDE_SLOW" == "1" ]]; then
-  printf '%-16s  %-12s  %-12s  %-12s  %-12s  %-12s  %-12s\n' \
-    "sample" "v8-interp" "v8-jit" "mx-scalar" "mx-inorder" "mx-ooo" "mx-ooo-rob"
-  printf '%s\n' "----------------------------------------------------------------------------------------------------------------"
-else
-  printf '%-16s  %-12s  %-12s  %-12s  %-12s\n' \
-    "sample" "v8-interp" "v8-jit" "mx-scalar" "mx-ooo"
-  printf '%s\n' "----------------------------------------------------------------------------"
-fi
+printf '%-16s  %-12s  %-12s\n' "sample" "v8-interp" "v8-jit"
+printf '%s\n' "--------------------------------------------"
 
 for sample in $SAMPLES; do
   src="$ROOT/sample/bench/${sample}.mx"
@@ -114,35 +100,18 @@ for sample in $SAMPLES; do
   prepare_src "$sample"
   work="$OUT/${sample}.mx"
   v8_mxb="$OUT/${sample}.v8.mxb"
-  mx_mxb="$OUT/${sample}.mx32.mxb"
 
   # Compile once into $OUT (do not touch repo sample/*.mxb).
   env MUNX_PIPE_HUB=0 "$MUNXC" --run "$work" >/dev/null
   cp -f "${work%.mx}.mxb" "$v8_mxb"
 
-  env MUNX_PIPE_HUB=0 "$MUNXC" --run --mx32 "$work" >/dev/null
-  cp -f "${work%.mx}.mxb" "$mx_mxb"
-
   v8_interp=$(time_cmd env MUNX_PIPE_HUB=0 MUNX_VM_JIT=0 "$MUNXC" --run --interp "$v8_mxb")
   v8_jit=$(time_cmd env MUNX_PIPE_HUB=0 "$MUNXC" --run "$v8_mxb")
-  mx_scalar=$(time_cmd env MUNX_PIPE_HUB=0 MUNX_VM_PIPELINE=scalar "$MUNXC" --run "$mx_mxb")
-  mx_ooo=$(time_cmd env MUNX_PIPE_HUB=0 MUNX_VM_PIPELINE=ooo "$MUNXC" --run "$mx_mxb")
 
-  if [[ "$INCLUDE_SLOW" == "1" ]]; then
-    mx_inorder=$(time_cmd env MUNX_PIPE_HUB=0 MUNX_VM_PIPELINE=inorder "$MUNXC" --run "$mx_mxb")
-    mx_rob=$(time_cmd env MUNX_PIPE_HUB=0 MUNX_VM_PIPELINE=ooo MUNX_VM_OOO_ROB=1 "$MUNXC" --run "$mx_mxb")
-    printf '%-16s  %-12s  %-12s  %-12s  %-12s  %-12s  %-12s\n' \
-      "$sample" "$v8_interp" "$v8_jit" "$mx_scalar" "$mx_inorder" "$mx_ooo" "$mx_rob"
-  else
-    printf '%-16s  %-12s  %-12s  %-12s  %-12s\n' \
-      "$sample" "$v8_interp" "$v8_jit" "$mx_scalar" "$mx_ooo"
-  fi
+  printf '%-16s  %-12s  %-12s\n' "$sample" "$v8_interp" "$v8_jit"
 done
 
 echo
 echo "Notes:"
 echo "  Trip count LIMIT=$LIMIT (nested ≈ isqrt(LIMIT)²)."
 echo "  Compile/lower excluded; times are image run only (avg of $RUNS)."
-if [[ "$INCLUDE_SLOW" != "1" ]]; then
-  echo "  Skipped mx-inorder / mx-ooo-rob (set INCLUDE_SLOW=1 to enable)."
-fi

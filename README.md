@@ -36,6 +36,8 @@ MUNX_VM_JIT=0 ./munxc --run sample/logscope/main.mxb access.log
 ./munxc --ast sample/logscope/main.mx                # print AST
 ./munxc --tokens sample/logscope/main.mx             # print tokens
 ./munxc --files sample/io.mx sample/process_.mx      # compile several files
+./munxc --analyze tests/programs/hello.mx            # semantic JSON snapshot (LSP tooling)
+./munxc --analyze-server                             # persistent JSON-RPC analyze daemon
 ```
 
 ### Native executables (`--native`)
@@ -225,7 +227,9 @@ COUNT=10000 RUNS=3 ./tools/bench_pubsub.sh
 ```
 
 A separate [Munx language server](../munx-language-server/) provides LSP
-completions, hover, symbols, and light diagnostics for `.mx` files.
+completions, hover, symbols, and diagnostics for `.mx` files. It prefers a
+long-lived `munxc --analyze-server` for real compiler types and errors (set
+`MUNXC` or keep `./munxc` next to the language-server repo).
 
 `open` selects the handle type from its `io_type` enum member:
 `io_type::tty` with `in` / `out` yields a `term`, `io_type::file` with a path
@@ -268,6 +272,8 @@ members yields a `socket`.
 | AST | `include/ast.hpp` |
 | Parser | `include/parser.hpp` |
 | Debug printer | `include/ast_printer.hpp` |
+| Type checker / semantic index | `include/type_checker.hpp`, `include/semantic_index.hpp` |
+| Analyze host (LSP) | `include/analyze.hpp`, `include/analyze/` |
 | Bytecode compiler | `include/bytecode_compiler.hpp` |
 | Opcodes | `include/Opcode.hpp` |
 | Disassembler / decompiler | `include/bytecode_decoder.hpp`, `include/bytecode_decompiler.hpp` |
@@ -518,6 +524,7 @@ sample/invalid/        one-file-per-error compile-fail tests
 sample/chatrelay/      multi-file real-world project (TCP chat relay)
 sample/logscope/       multi-file real-world project (concurrent log analyzer)
 sample/shipyard/       multi-file order-fulfillment pipeline (verbose logging)
+sample/fileserve/      HTTP/1.1 static file server (usable for local/LAN hosting)
 src/                   CLI driver
 ```
 
@@ -528,5 +535,6 @@ Compile and run the two multi-file projects with:
 ./munxc --run sample/logscope/main.mx sample/logscope/access.log
 ./munxc --run sample/chatrelay/main.mx --log chatrelay.log   # serves :7070
 ./munxc --run sample/shipyard/main.mx sample/shipyard/orders.csv --verbose --trace
+./munxc --run --interp sample/fileserve/main.mx -- --root sample/fileserve/www --host 127.0.0.1 --port 8080
 ```
 # munchkinglang

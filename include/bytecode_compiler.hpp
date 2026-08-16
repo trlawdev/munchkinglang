@@ -155,8 +155,20 @@ struct package_resolver {
     template <typename... Args>
     void error_at(const ast::source_loc &loc, const char *fmt, Args &&...args)
     {
-        formatter_.format("{}: error: ", loc);
-        formatter_.format(fmt, std::forward<Args>(args)...);
+        std::ostringstream message;
+        formatter message_fmt{message};
+        message_fmt.format(fmt, std::forward<Args>(args)...);
+        std::string text = message.str();
+        while (!text.empty() && (text.back() == '\n' || text.back() == ' '))
+        {
+            text.pop_back();
+        }
+        fail_compile_at(loc.file, loc.line, loc.column, text);
+        if (active_compile_context == nullptr || !active_compile_context->collect_all)
+        {
+            formatter_.format("{}: error: ", loc);
+            formatter_.format("{}\n", text);
+        }
         ok = false;
     }
 
@@ -384,6 +396,15 @@ inline void codegen_error(const ast::source_loc &loc, const std::string &message
     fail_compile(out.str());
 }
 
+/// Per-field metadata for object constructors (constraints).
+struct object_field_codegen
+{
+    std::string name;
+    const ast::expr_node *constraint{nullptr};
+};
+using object_schema_map =
+    std::unordered_map<std::string, std::vector<object_field_codegen>>;
+
 /// Emits stack-VM bytecode for one code blob: either a function body or a
 /// package's top-level statement list. Nested lambdas / function
 /// declarations are compiled with fresh emitters and appended to the
@@ -394,6 +415,8 @@ class code_emitter
     std::vector<compiled_function> &functions_;    ///< Current package's functions.
     size_t &lambda_counter_;                       ///< Package-wide lambda id source.
     std::unordered_set<std::string> &object_types_; ///< User object type names in this package.
+    object_schema_map &object_schemas_;            ///< Object fields + constraints.
+    size_t &constraint_tmp_counter_;               ///< Unique temps for constrained ctors.
     code_builder code_;                            ///< Output blob.
     std::vector<std::vector<uint32_t>> loop_breaks_; ///< Pending break patches per loop.
     std::vector<uint32_t> stray_breaks_;           ///< Breaks outside any loop; patched to blob end.
@@ -429,9 +452,11 @@ class code_emitter
 public:
     code_emitter(string_table &strings, std::vector<compiled_function> &functions,
                  size_t &lambda_counter, std::unordered_set<std::string> &object_types,
+                 object_schema_map &object_schemas, size_t &constraint_tmp_counter,
                  const type_annotation_map *types = nullptr)
         : strings_(strings), functions_(functions), lambda_counter_(lambda_counter),
-          object_types_(object_types), types_(types)
+          object_types_(object_types), object_schemas_(object_schemas),
+          constraint_tmp_counter_(constraint_tmp_counter), types_(types)
     {}
 
     /// Compile a function body: bind parameters, emit statements, and
@@ -478,7 +503,8 @@ private:
                                        const ast::block_stmt &body,
                                        const ast::type_node *return_type)
     {
-        code_emitter nested{strings_, functions_, lambda_counter_, object_types_, types_};
+        code_emitter nested{strings_, functions_, lambda_counter_, object_types_,
+                            object_schemas_, constraint_tmp_counter_, types_};
         nested.debug_map_.clear();
         compiled_function result{
             name,
@@ -601,7 +627,19 @@ private:
         case ast::stmt_type::ObjectDecl:
         {
             const auto &decl = ast::as_stmt<ast::object_decl>(stmt);
+            if (decl.is_trait)
+            {
+                break; // traits are compile-time only (no DEFINE_OBJECT)
+            }
             object_types_.insert(decl.name);
+            std::vector<object_field_codegen> schema;
+            schema.reserve(decl.fields.size());
+            for (const auto &field : decl.fields)
+            {
+                schema.push_back(
+                    object_field_codegen{field.name, field.constraint.get()});
+            }
+            object_schemas_[decl.name] = std::move(schema);
             code_.op(Opcode::DEFINE_OBJECT);
             code_.str(strings_.intern(decl.name));
             code_.u32(static_cast<uint32_t>(decl.fields.size()));
@@ -818,6 +856,148 @@ private:
 
     // -- expressions -------------------------------------------------------------
 
+    /// Rewrite every identifier `_` in @p expr to a load of @p replacement_name.
+    static std::unique_ptr<ast::expr_node>
+    subst_underscore(const ast::expr_node &expr, const std::string &replacement_name)
+    {
+        auto id = [&](const std::string &n) {
+            return ast::make_expr_ptr(ast::identifier{n}, expr.loc);
+        };
+        switch (expr.type)
+        {
+        case ast::expr_type::Identifier:
+            if (ast::as<ast::identifier>(expr).name == "_")
+            {
+                return id(replacement_name);
+            }
+            return id(ast::as<ast::identifier>(expr).name);
+        case ast::expr_type::Unary:
+        {
+            const auto &u = ast::as<ast::unary_expr>(expr);
+            ast::unary_expr out;
+            out.op = u.op;
+            out.operand = subst_underscore(*u.operand, replacement_name);
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        case ast::expr_type::Binary:
+        {
+            const auto &b = ast::as<ast::binary_expr>(expr);
+            ast::binary_expr out;
+            out.op = b.op;
+            out.left = subst_underscore(*b.left, replacement_name);
+            out.right = subst_underscore(*b.right, replacement_name);
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        case ast::expr_type::Member:
+        {
+            const auto &m = ast::as<ast::member_expr>(expr);
+            ast::member_expr out;
+            out.object = subst_underscore(*m.object, replacement_name);
+            out.member = m.member;
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        case ast::expr_type::Index:
+        {
+            const auto &ix = ast::as<ast::index_expr>(expr);
+            ast::index_expr out;
+            out.object = subst_underscore(*ix.object, replacement_name);
+            out.index = subst_underscore(*ix.index, replacement_name);
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        case ast::expr_type::Call:
+        {
+            const auto &c = ast::as<ast::call_expr>(expr);
+            ast::call_expr out;
+            out.callee = subst_underscore(*c.callee, replacement_name);
+            for (const auto &arg : c.arguments)
+            {
+                out.arguments.push_back(subst_underscore(*arg, replacement_name));
+            }
+            for (const auto &ta : c.type_arguments)
+            {
+                // type args are types, not expressions — leave unused
+                (void)ta;
+            }
+            return ast::make_expr_ptr(std::move(out), expr.loc);
+        }
+        case ast::expr_type::IntLiteral:
+            return ast::make_expr_ptr(
+                ast::int_literal{ast::as<ast::int_literal>(expr).value}, expr.loc);
+        case ast::expr_type::FloatLiteral:
+            return ast::make_expr_ptr(
+                ast::float_literal{ast::as<ast::float_literal>(expr).value}, expr.loc);
+        case ast::expr_type::BoolLiteral:
+            return ast::make_expr_ptr(
+                ast::bool_literal{ast::as<ast::bool_literal>(expr).value}, expr.loc);
+        case ast::expr_type::StringLiteral:
+            return ast::make_expr_ptr(
+                ast::string_literal{ast::as<ast::string_literal>(expr).value}, expr.loc);
+        case ast::expr_type::CharLiteral:
+            return ast::make_expr_ptr(
+                ast::char_literal{ast::as<ast::char_literal>(expr).value}, expr.loc);
+        case ast::expr_type::NullLiteral:
+            return ast::make_expr_ptr(ast::null_literal{}, expr.loc);
+        default:
+            fail_compile(std::string{expr.loc.file} + ':' +
+                         std::to_string(expr.loc.line) +
+                         ": error: unsupported expression inside `<constraint>`");
+            return id(replacement_name);
+        }
+    }
+
+    void emit_fail_message(const std::string &message)
+    {
+        code_.op(Opcode::LOAD);
+        code_.str(strings_.intern("fail"));
+        code_.op(Opcode::PUSH_STRING);
+        code_.str(strings_.intern(message));
+        code_.op(Opcode::CALL);
+        code_.u8(1);
+        code_.op(Opcode::POP);
+    }
+
+    void emit_constrained_object_ctor(const std::string &ctor_name,
+                                      const ast::call_expr &call,
+                                      const std::vector<object_field_codegen> &schema,
+                                      const ast::source_loc &loc)
+    {
+        const size_t batch = constraint_tmp_counter_++;
+        std::vector<std::string> tmps;
+        tmps.reserve(call.arguments.size());
+        for (size_t i = 0; i < call.arguments.size(); ++i)
+        {
+            tmps.push_back("__munx_c" + std::to_string(batch) + "_" +
+                           std::to_string(i));
+            emit_expr(*call.arguments[i]);
+            code_.op(Opcode::STORE);
+            code_.str(strings_.intern(tmps.back()));
+        }
+        for (size_t i = 0; i < schema.size(); ++i)
+        {
+            if (schema[i].constraint == nullptr)
+            {
+                continue;
+            }
+            auto check =
+                subst_underscore(*schema[i].constraint, tmps[i]);
+            emit_expr(*check);
+            const uint32_t ok = code_.jump(Opcode::JMP_IF_TRUE);
+            emit_fail_message("field `" + schema[i].name +
+                              "` violates `<constraint>`");
+            code_.patch(ok, code_.here());
+        }
+        code_.op(Opcode::LOAD);
+        code_.str(strings_.intern(ctor_name));
+        for (const std::string &tmp : tmps)
+        {
+            code_.op(Opcode::LOAD);
+            code_.str(strings_.intern(tmp));
+        }
+        code_.op(Opcode::CALL);
+        code_.u8(static_cast<uint8_t>(call.arguments.size()));
+        (void)loc;
+    }
+
     void emit_expr(const ast::expr_node &expr)
     {
         switch (expr.type)
@@ -901,6 +1081,31 @@ private:
             if (call.arguments.size() > 255)
             {
                 codegen_error(expr.loc, "too many call arguments (max 255)");
+            }
+            if (call.callee->type == ast::expr_type::Identifier)
+            {
+                const std::string &ctor =
+                    ast::as<ast::identifier>(*call.callee).name;
+                const auto schema = object_schemas_.find(ctor);
+                if (schema != object_schemas_.end() &&
+                    schema->second.size() == call.arguments.size())
+                {
+                    bool any_constraint = false;
+                    for (const auto &field : schema->second)
+                    {
+                        if (field.constraint != nullptr)
+                        {
+                            any_constraint = true;
+                            break;
+                        }
+                    }
+                    if (any_constraint)
+                    {
+                        emit_constrained_object_ctor(ctor, call, schema->second,
+                                                     expr.loc);
+                        break;
+                    }
+                }
             }
             emit_expr(*call.callee);
             for (const auto &argument : call.arguments)
@@ -1400,6 +1605,10 @@ public:
       }
       type_map_ = type_checker::check_packages_annotated(
           resolver_.main_dir_path(), main_, resolver_.imports_package_programs);
+      if (active_compile_context != nullptr && active_compile_context->failed())
+      {
+          return {};
+      }
       packages_.clear();
       packages_.reserve(resolver_.imports_package_programs.size() + 1);
       for (const auto &import_program : resolver_.imports_package_programs)
@@ -1411,19 +1620,25 @@ public:
   }
 
   /// Compile and write the image to @p output_path.
-  /// @return Number of bytes written.
+  /// @return Number of bytes written, or 0 if compilation failed.
   size_t compile_to_file(const std::filesystem::path &output_path) {
       const std::vector<std::byte> image = compile();
+      if (active_compile_context != nullptr && active_compile_context->failed())
+      {
+          return 0;
+      }
       std::ofstream output{output_path, std::ios::binary};
       if (!output)
       {
           fail_compile("could not open output file: " + output_path.string());
+          return 0;
       }
       output.write(reinterpret_cast<const char *>(image.data()),
                    static_cast<std::streamsize>(image.size()));
       if (!output)
       {
           fail_compile("failed to write output file: " + output_path.string());
+          return 0;
       }
       return image.size();
   }
@@ -1436,8 +1651,10 @@ private:
       package.name = program.package_name;
       size_t lambda_counter = 0;
       std::unordered_set<std::string> object_types;
+      object_schema_map object_schemas;
+      size_t constraint_tmp_counter = 0;
       code_emitter emitter{strings_, package.functions, lambda_counter, object_types,
-                           &type_map_};
+                           object_schemas, constraint_tmp_counter, &type_map_};
       emitter.clear_debug_map();
       package.init_code = emitter.emit_toplevel(program.statements);
       package.init_debug_map = emitter.take_debug_map();

@@ -1,0 +1,49 @@
+package fs
+load_packages {types, pathutil, http}
+
+// Map a URL path onto the document root and load file bytes as a string.
+
+func candidate_paths(url_path: string): [string] {
+    paths = [string][]
+    if url_path == "/" || ends_with_slash(url_path) {
+        append(paths, concat(url_path, "index.html"))
+        return paths
+    }
+    if has_extension(url_path) {
+        append(paths, url_path)
+        return paths
+    }
+    // Extensionless path: try the bare file, then directory index.
+    append(paths, url_path)
+    append(paths, concat(url_path, "/index.html"))
+    return paths
+}
+
+func read_file_bytes(abs_path: string): tuple[bool, string] {
+    monitor {
+        handle = open(io_type::file, abs_path, in)
+        data = read(handle)
+        close(handle)
+        if data == null {
+            return {false, ""}
+        }
+        return {true, cast[string](data)}
+    } trap(err: exception) {
+        return {false, ""}
+    }
+}
+
+func load_url(root: string, url_path: string): HttpResponse {
+    candidates = candidate_paths(url_path)
+    i = 0
+    loop i < candidates.len {
+        rel = candidates[i]
+        abs = join_root(root, rel)
+        ok, body = read_file_bytes(abs)
+        if ok {
+            return response_for_file(rel, body)
+        }
+        i += 1
+    }
+    return text_error(404, concat("No file for ", url_path))
+}

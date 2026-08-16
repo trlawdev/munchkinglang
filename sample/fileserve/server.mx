@@ -1,0 +1,100 @@
+package server
+load_packages {types, http, fs, accesslog, pathutil}
+
+// HTTP/1.1 accept loop. Connections are handled on the accept thread so the
+// server stays stable under concurrent clients (kernel backlog queues them).
+
+HOST = "0.0.0.0"
+PORT = 8080
+BACKLOG = 128
+DOCROOT = "."
+accepting = true
+
+func configure(host: string, port: int, root: string): void {
+    HOST = host
+    PORT = port
+    DOCROOT = root
+}
+
+func bind_listener(): socket {
+    listener = open(io_type::socket, af_type::inet, sock_type::stream)
+    bind(listener, HOST, PORT)
+    listen(listener, BACKLOG)
+    return listener
+}
+
+func handle_connection(client: socket, peer: string): void {
+    monitor {
+        raw_value = read(client, 16384)
+        if raw_value == null {
+            close(client)
+            return
+        }
+        raw = cast[string](raw_value)
+        req = parse_request(raw)
+
+        resp = text_error(500, "internal error")
+        if !req.ok {
+            if req.error == "method not allowed" {
+                resp = text_error(405, "Only GET and HEAD are supported")
+            } else if req.error == "unsafe path" {
+                resp = text_error(403, req.error)
+            } else {
+                resp = text_error(400, req.error)
+            }
+        } else {
+            resp = load_url(DOCROOT, req.path)
+        }
+
+        payload = format_headers(resp, req.method)
+        write(client, payload)
+
+        log_path = req.path
+        if log_path == "" {
+            log_path = "-"
+        }
+        log_version = req.version
+        if log_version == "" {
+            log_version = "HTTP/1.1"
+        }
+        log_method = req.method
+        if log_method == "" {
+            log_method = "-"
+        }
+        log_access(peer, log_method, log_path, log_version, resp.status,
+                   resp.body_len, req.host)
+    } trap(err: exception) {
+        monitor {
+            write(client, format_headers(
+                text_error(500, cast[string](err)), "GET"))
+        } trap(_ignore: exception) {
+        }
+    }
+    close(client)
+}
+
+func serve_forever(): void {
+    listener = bind_listener()
+    out = fix(open(io_type::tty, out))
+    write(out, concat(
+        "fileserve listening on http://", HOST, ":", cast[string](PORT),
+        "  root=", DOCROOT, "\n"
+    ))
+
+    loop accepting {
+        monitor {
+            client, peer = accept(listener)
+            handle_connection(client, peer)
+        } trap(err: exception) {
+            if accepting {
+                write(out, concat("accept error: ", cast[string](err), "\n"))
+            }
+        }
+    }
+
+    close(listener)
+}
+
+func request_shutdown(): void {
+    accepting = false
+}

@@ -80,9 +80,9 @@ if unlikely(arr.len == 0) { // unlikely is a keyword that gives hint to the munx
 
 //Interfacing with low level C library
 
-library_handle = load_library("object.o") // load_library loads a C shared library / DLL (.o falls back to .so/.dll/.dylib)
+library_handle = load_library("sample/object.o") // load_library loads a C shared library / DLL (.o falls back to .so/.dll/.dylib)
 if library_handle == null {
-    fail("failed to load library: ", "object.o")
+    fail("failed to load library: ", "sample/object.o")
 }
 
 func_handle = resolve_callable(library_handle, "add_int") // resolve_callable resolves a function in a shared object or dll, returns a function handle that is callable, assume add_int is a c function with structure like 
@@ -99,19 +99,15 @@ func_handle_pointer(pointer(int_value)) // creates a pointer for the passed valu
 
 close_library(library_handle)
 
-//I'll add support for pointers later
-
+// `pointer(v)` boxes an int for FFI; richer pointer types can come later.
 
 trait Human { // trait is a keyword that creates some sort of interface
     name: string
 }
 
-
-
 func print_name(human: Human) {
     println("humans name is: ", human.name)
 }
-
 
 object Child {
     name: string,
@@ -140,6 +136,12 @@ object DoesNotMatchByNameAndType {
     _some: float
 }
 
-print_name(/* any value passed here */) // will fail DoesNotMatchByName, DoesNotMatchByType, DoesNotMatchByNameAndType since they dont match the shape of the
-// trait type
-// for the other values, Child, Teenager and Adult they will match since they match the needed field types in the language
+// Structural trait match: Child / Teenager / Adult all have `name: string`.
+print_name(Child("sam", 10))
+print_name(Teenager("alex", 15))
+print_name(Adult("jordan", 30))
+// These would fail type-check (wrong shape for Human):
+// print_name(DoesNotMatchByName("x"))
+// print_name(DoesNotMatchByType(1))
+// print_name(DoesNotMatchByNameAndType(1.0))
+// 

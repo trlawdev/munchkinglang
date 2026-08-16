@@ -3,9 +3,6 @@
 #include "platform.hpp"
 #include "Opcode.hpp"
 #include "bytecode_decoder.hpp"
-#include "isa/mx32.hpp"
-#include "isa/mx32_pipeline.hpp"
-#include "isa/mx32_serialize.hpp"
 #include "jit/bytecode_utils.hpp"
 #include "jit/branch_predictor.hpp"
 #include "jit/execution_profile.hpp"
@@ -70,8 +67,6 @@ struct program_image
     std::vector<package_def> packages; ///< Imports first, entry point last.
     std::string entry_package;
     uint16_t bytecode_version{8};
-    /// Populated for MX v9 (fixed-length mx32 ISA) images.
-    std::optional<isa::mx_module> mx32;
 };
 
 /// @return Parameter names bound by the STORE prologue of @p code.
@@ -211,18 +206,6 @@ inline program_image load_program(const std::filesystem::path &path)
         reinterpret_cast<const char *>(image.bytes.data() +
                                        header.string_table_offset),
         header.string_table_length};
-
-    if (header.mx_bytecode_version == 9)
-    {
-        const auto &entry = header.entry_point_package_descriptor;
-        image.entry_package = std::string{
-            image.strings.substr(header.package_name_offset,
-                                 header.package_name_length)};
-        image.mx32 = isa::deserialize_mx32(
-            image.bytes.data() + entry.package_bytecode_offset,
-            entry.package_bytecode_length);
-        return image;
-    }
 
     const auto blob = [&image](size_t offset, size_t length) {
         return std::span<const std::byte>{image.bytes.data() + offset, length};
@@ -1420,6 +1403,20 @@ private:
             }
             return value{};
         });
+        define_builtin("pointer", [](virtual_machine &, value_vector &arguments) {
+            expect_arity(arguments, 1, 1, "pointer");
+            auto cell = std::make_shared<pointer_object>();
+            if (is_numeric(arguments[0]))
+            {
+                cell->cell = as_integer(arguments[0]);
+            }
+            else
+            {
+                throw_error("pointer expects a numeric value");
+                return value{};
+            }
+            return value{cell};
+        });
     }
 
     /// Try @p path and common shared-library suffixes (.so / .dll / .dylib).
@@ -1507,12 +1504,23 @@ private:
         int64_t args[8]{};
         for (size_t i = 0; i < arguments.size(); ++i)
         {
+            if (const auto *ptr = arguments[i].get_if<pointer_ref>())
+            {
+                if (*ptr == nullptr)
+                {
+                    throw_error("foreign callable `" + callable.symbol +
+                                "` got a null pointer argument");
+                    return value{};
+                }
+                args[i] = static_cast<int64_t>(
+                    reinterpret_cast<uintptr_t>(&(*ptr)->cell));
+                continue;
+            }
             if (!is_numeric(arguments[i]))
             {
                 throw_error("foreign callable `" + callable.symbol +
                             "` argument " + std::to_string(i) +
-                            " must be numeric (pointer marshalling is not "
-                            "supported yet)");
+                            " must be numeric or a pointer()");
                 return value{};
             }
             args[i] = as_integer(arguments[i]);
@@ -3196,18 +3204,6 @@ inline int run_bytecode_file(const std::filesystem::path &path,
     pipe_hub::client::session hub_session;
 #endif
     program_image image = load_program(path);
-    if (image.mx32.has_value())
-    {
-        isa::mx_cpu cpu;
-        cpu.bind(*image.mx32);
-        cpu.argv = arguments;
-        auto mode = isa::pipeline_mode_from_env();
-        if (jit::jit_force_interpreter())
-        {
-            mode = isa::pipeline_mode::scalar;
-        }
-        return cpu.run(mode);
-    }
     virtual_machine machine{std::move(image), arguments};
     return machine.run();
 }

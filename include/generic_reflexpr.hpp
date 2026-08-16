@@ -37,6 +37,7 @@ struct field_info
 struct object_info
 {
     std::vector<field_info> fields;
+    bool is_trait{false};
 };
 
 inline std::string type_kind_name(const ast::type_node &type)
@@ -233,6 +234,7 @@ struct param_info
     std::string name;
     std::string type_name; ///< Display name (e.g. T, int, Person)
     std::string kind;      ///< typeid kind string
+    bool is_trait_type{false};
 };
 
 struct func_info
@@ -267,12 +269,14 @@ struct ct_value
         MetaParam,       ///< One generic type param
         FuncParam,       ///< One function parameter
         TypeName,        ///< Bound local's static object type name
+        TypeArtifact,    ///< Type reflection (name + is_trait_type)
         Bool,            ///< Compile-time bool
     } tag{kind::None};
     std::string type_name;
     std::string func_name;
     std::string package_name;
     bool flag{false};
+    bool is_trait_type{false};
     std::vector<field_info> fields;
     std::vector<param_info> params;
     std::vector<std::string> meta_names;
@@ -312,7 +316,7 @@ private:
     /// Field being unrolled by `::reflect_for` (for nested generic inference).
     const field_info *current_field_{nullptr};
 
-    static func_info make_func_info(const ast::func_decl &fn,
+    func_info make_func_info(const ast::func_decl &fn,
                                     const std::string &package_name)
     {
         func_info info;
@@ -327,6 +331,15 @@ private:
             pi.name = p.name;
             pi.type_name = named_type_name(*p.type);
             pi.kind = type_kind_name(*p.type);
+            if (p.type->type == ast::type_kind::Named)
+            {
+                const auto &n = std::get<ast::named_type>(p.type->value).name;
+                const auto found = objects_.find(n);
+                if (found != objects_.end())
+                {
+                    pi.is_trait_type = found->second.is_trait;
+                }
+            }
             info.params.push_back(std::move(pi));
         }
         return info;
@@ -336,12 +349,13 @@ private:
     {
         for (const auto &stmt : program_.statements)
         {
-            if (stmt->type != ast::stmt_type::ObjectDecl)
+            if (stmt == nullptr || stmt->type != ast::stmt_type::ObjectDecl)
             {
                 continue;
             }
             const auto &decl = ast::as_stmt<ast::object_decl>(*stmt);
             object_info info;
+            info.is_trait = decl.is_trait;
             for (const auto &field : decl.fields)
             {
                 field_info f;
@@ -360,7 +374,7 @@ private:
         pkg.name = program_.package_name;
         for (const auto &stmt : program_.statements)
         {
-            if (stmt->type != ast::stmt_type::FuncDecl)
+            if (stmt == nullptr || stmt->type != ast::stmt_type::FuncDecl)
             {
                 continue;
             }
@@ -390,7 +404,7 @@ private:
         info.name = pkg.package_name;
         for (const auto &stmt : pkg.statements)
         {
-            if (stmt->type != ast::stmt_type::FuncDecl)
+            if (stmt == nullptr || stmt->type != ast::stmt_type::FuncDecl)
             {
                 continue;
             }
@@ -497,7 +511,7 @@ private:
     {
         for (const auto &stmt : program_.statements)
         {
-            if (stmt->type != ast::stmt_type::FuncDecl)
+            if (stmt == nullptr || stmt->type != ast::stmt_type::FuncDecl)
             {
                 continue;
             }
@@ -556,12 +570,13 @@ private:
     {
         for (const auto &stmt : stmts)
         {
-            if (stmt->type != ast::stmt_type::Assignment)
+            if (stmt == nullptr || stmt->type != ast::stmt_type::Assignment)
             {
                 continue;
             }
             const auto &assign = ast::as_stmt<ast::assignment_stmt>(*stmt);
-            if (assign.targets.size() != 1 || assign.targets.front().name.empty())
+            if (assign.value == nullptr || assign.targets.size() != 1 ||
+                assign.targets.front().name.empty())
             {
                 continue;
             }
@@ -582,6 +597,10 @@ private:
     {
         for (auto &stmt : stmts)
         {
+            if (stmt == nullptr)
+            {
+                continue;
+            }
             rewrite_stmt(*stmt);
         }
     }
@@ -591,11 +610,23 @@ private:
         switch (stmt.type)
         {
         case ast::stmt_type::Assignment:
-            rewrite_expr(*ast::as_stmt<ast::assignment_stmt>(stmt).value);
+        {
+            auto &value = ast::as_stmt<ast::assignment_stmt>(stmt).value;
+            if (value != nullptr)
+            {
+                rewrite_expr(*value);
+            }
             break;
+        }
         case ast::stmt_type::Expr:
-            rewrite_expr(*ast::as_stmt<ast::expr_stmt>(stmt).expression);
+        {
+            auto &expression = ast::as_stmt<ast::expr_stmt>(stmt).expression;
+            if (expression != nullptr)
+            {
+                rewrite_expr(*expression);
+            }
             break;
+        }
         case ast::stmt_type::Return:
         {
             auto &ret = ast::as_stmt<ast::return_stmt>(stmt);
@@ -889,6 +920,10 @@ private:
     {
         for (const auto &stmt : src.statements)
         {
+            if (stmt == nullptr)
+            {
+                continue;
+            }
             lower_stmt(*stmt, env, bind, dst, loc);
         }
     }
@@ -902,7 +937,7 @@ private:
         {
             const auto &assign = ast::as_stmt<ast::assignment_stmt>(stmt);
             if (assign.targets.size() == 1 && !assign.targets.front().name.empty() &&
-                assign.value->type == ast::expr_type::Call)
+                assign.value != nullptr && assign.value->type == ast::expr_type::Call)
             {
                 const auto &call = ast::as<ast::call_expr>(*assign.value);
                 const std::string cal = callee_name(*call.callee);
@@ -992,6 +1027,10 @@ private:
                 }
             }
             // Runtime assignment (e.g. p = Person(...)): keep as-is.
+            if (assign.value == nullptr)
+            {
+                return;
+            }
             ast::assignment_stmt copy;
             copy.op = assign.op;
             copy.targets = assign.targets;
@@ -1298,7 +1337,7 @@ private:
         {
             const auto &decl = ast::as_stmt<ast::enum_decl>(stmt);
             dst.statements.push_back(ast::make_stmt_ptr(
-                ast::enum_decl{decl.name, decl.members}, stmt.loc));
+                ast::enum_decl{decl.name, decl.members, decl.name_loc}, stmt.loc));
             return;
         }
         if (stmt.type == ast::stmt_type::ObjectDecl)
@@ -1306,12 +1345,17 @@ private:
             const auto &decl = ast::as_stmt<ast::object_decl>(stmt);
             ast::object_decl copy;
             copy.name = decl.name;
+            copy.is_trait = decl.is_trait;
             for (const auto &field : decl.fields)
             {
                 ast::object_field f;
                 f.loc = field.loc;
                 f.name = field.name;
                 f.type = clone_type(*field.type);
+                if (field.constraint)
+                {
+                    f.constraint = lower_ct_expr(*field.constraint, {}, {}, stmt.loc);
+                }
                 copy.fields.push_back(std::move(f));
             }
             dst.statements.push_back(ast::make_stmt_ptr(std::move(copy), stmt.loc));
@@ -1466,6 +1510,31 @@ private:
                     return &list_scratch;
                 }
             }
+            if ((base->tag == ct_value::kind::FuncParam ||
+                 base->tag == ct_value::kind::MetaParam) &&
+                mem.member == "type")
+            {
+                static thread_local ct_value type_scratch;
+                type_scratch = {};
+                type_scratch.tag = ct_value::kind::TypeArtifact;
+                type_scratch.type_name = base->param.type_name;
+                type_scratch.is_trait_type = base->param.is_trait_type;
+                return &type_scratch;
+            }
+            if (base->tag == ct_value::kind::TypeArtifact)
+            {
+                if (mem.member == "is_trait_type")
+                {
+                    static thread_local ct_value bool_scratch;
+                    bool_scratch.tag = ct_value::kind::Bool;
+                    bool_scratch.flag = base->is_trait_type;
+                    return &bool_scratch;
+                }
+                if (mem.member == "name")
+                {
+                    return base; // type_name already set
+                }
+            }
             return base;
         }
         return nullptr;
@@ -1477,15 +1546,12 @@ private:
         if (expr.type == ast::expr_type::Member)
         {
             const auto &mem = ast::as<ast::member_expr>(expr);
-            if (mem.member == "is_meta_function")
+            if (mem.member == "is_meta_function" || mem.member == "is_trait_type")
             {
-                const ct_value *base = eval_ct(*mem.object, env);
-                if (base != nullptr && base->tag == ct_value::kind::FuncArtifact)
+                const ct_value *v = eval_ct(expr, env);
+                if (v != nullptr && v->tag == ct_value::kind::Bool)
                 {
-                    static thread_local ct_value bool_scratch;
-                    bool_scratch.tag = ct_value::kind::Bool;
-                    bool_scratch.flag = base->flag;
-                    return &bool_scratch;
+                    return v;
                 }
             }
         }
@@ -1612,7 +1678,21 @@ private:
                     }
                     if (mem.member == "type")
                     {
+                        // Preserve TypeArtifact for `.is_trait_type` / `.name`.
+                        // Materialize as a printable string when used as a value.
                         return make_string(base->param.type_name, expr.loc);
+                    }
+                }
+                if (base->tag == ct_value::kind::TypeArtifact)
+                {
+                    if (mem.member == "name")
+                    {
+                        return make_string(base->type_name, expr.loc);
+                    }
+                    if (mem.member == "is_trait_type")
+                    {
+                        return ast::make_expr_ptr(ast::bool_literal{base->is_trait_type},
+                                                  expr.loc);
                     }
                 }
             }
@@ -1630,7 +1710,7 @@ private:
                 }
                 const std::string type_name =
                     resolve_type_arg_name(*call.arguments[0], env, bind, expr.loc);
-                if (!objects_.contains(type_name))
+                if (!objects_.contains(type_name) || objects_.at(type_name).is_trait)
                 {
                     fail_compile(expr.loc.file + ':' + std::to_string(expr.loc.line) +
                                  ": error: ::construct requires an object type");
@@ -1720,7 +1800,9 @@ private:
         {
             const auto &access = ast::as<ast::enum_access_expr>(expr);
             return ast::make_expr_ptr(
-                ast::enum_access_expr{access.enum_name, access.member}, expr.loc);
+                ast::enum_access_expr{access.enum_name, access.member, access.enum_loc,
+                                      access.member_loc},
+                expr.loc);
         }
         if (expr.type == ast::expr_type::Identifier)
         {

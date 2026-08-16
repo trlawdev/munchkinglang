@@ -1,8 +1,4 @@
 package sample
-load_package lib1
-load_package lib2
-load_package lib3
-load_packages {lib4, lib5, lib6}
 
 string_ = "hello"
 character = 'a'

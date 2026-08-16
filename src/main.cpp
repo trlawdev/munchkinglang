@@ -1,3 +1,4 @@
+#include "../include/analyze.hpp"
 #include "../include/ast_printer.hpp"
 #include "../include/bytecode_compiler.hpp"
 #include "../include/generic_reflexpr.hpp"
@@ -6,11 +7,6 @@
 #include "../include/errors.hpp"
 #include "../include/keywords.hpp"
 #include "../include/lexer.hpp"
-#include "../include/isa/mx32_emitter.hpp"
-#include "../include/isa/mx32_pipeline.hpp"
-#include "../include/isa/mx32_serialize.hpp"
-#include "../include/native/mir_builder.hpp"
-#include "../include/native/mir_optimizer.hpp"
 #include "../include/native/native_compiler.hpp"
 #include "../include/parser.hpp"
 #include "../include/platform.hpp"
@@ -56,13 +52,16 @@ namespace
                   << " --native [-o out] [--backend custom|llvm] [--asm] "
                      "[--arch x86_64|aarch64] <file.mx>\n"
                   << "       " << program
-                  << " --run [--interp] [--mx32] <file.mx|file.mxb> [args ...]\n"
+                  << " --run [--interp] <file.mx|file.mxb> [args ...]\n"
                   << "       " << program << " --ast <file.mx>\n"
                   << "       " << program << " --tokens <file.mx>\n"
                   << "       " << program << " --decode <file.mxb>\n"
                   << "       " << program << " --decompile <file.mxb>\n"
                   << "       " << program << " --files <file.mx> [file.mx ...]\n"
                   << "       " << program << " --tokens --files <file.mx> [file.mx ...]\n"
+                  << "       " << program
+                  << " --analyze [--stdin --filename path.mx] <file.mx>\n"
+                  << "       " << program << " --analyze-server\n"
                   << "\n"
                   << "Compile munx source file(s) to bytecode (<file>.mxb).\n"
                   << "Use --native to emit a host native executable (subset of the language).\n"
@@ -72,13 +71,13 @@ namespace
                   << "  file is compiled first, and trailing arguments become argv.\n"
                   << "Use --interp with --run to force the bytecode interpreter\n"
                   << "  instead of the default threaded JIT (also MUNX_VM_JIT=0).\n"
-                  << "Use --mx32 with --run to execute via the fixed-length mx32 ISA\n"
-                  << "  pipeline (MUNX_VM_PIPELINE=scalar|inorder|ooo).\n"
                   << "Use --ast to print the AST instead of compiling.\n"
                   << "Use --tokens to print the token stream instead.\n"
                   << "Use --decode to validate and disassemble bytecode.\n"
                   << "Use --decompile to reconstruct source-like Munx.\n"
-                  << "Use --files to compile multiple source files in one invocation.\n";
+                  << "Use --files to compile multiple source files in one invocation.\n"
+                  << "Use --analyze to emit a semantic JSON snapshot for tooling/LSP.\n"
+                  << "Use --analyze-server for a persistent JSON-RPC analyze daemon.\n";
     }
 
     void print_tokens(const std::vector<munx::token> &tokens)
@@ -140,6 +139,11 @@ namespace
             std::filesystem::path output_path = source_path;
             output_path.replace_extension(".mxb");
             const size_t written = compiler.compile_to_file(output_path);
+            if (munx::active_compile_context != nullptr &&
+                munx::active_compile_context->failed())
+            {
+                return;
+            }
             std::cout << "wrote " << output_path.string() << " (" << written
                       << " bytes)\n";
         });
@@ -208,34 +212,11 @@ bool compile_native_file(const std::filesystem::path &source_path,
     }
 
     int run_program(const std::filesystem::path &path,
-                    std::vector<std::string> arguments, bool mx32_isa)
+                    std::vector<std::string> arguments)
     {
         std::filesystem::path image = path;
         int exit_status = 1;
         const munx::error compile_error = munx::run_compile_boundary([&] {
-            if (mx32_isa)
-            {
-                std::filesystem::path image_path = path;
-                if (path.extension() != ".mxb")
-                {
-                    const std::string source = read_file_or_fail(path);
-                    munx::lexer lex{source, munx::keywords(), path};
-                    munx::parser parse{lex.read_tokens(), path};
-                    munx::ast::program program = parse.parse_program();
-                    munx::expand_generics_and_reflexpr(program);
-                    munx::native::mir_builder builder;
-                    munx::native::mir::module mod =
-                        builder.build(path.parent_path(), program);
-                    mod = munx::native::mir::optimize_mir(std::move(mod));
-                    munx::isa::mx_module mx = munx::isa::emit_mx32(mod);
-                    image_path.replace_extension(".mxb");
-                    munx::isa::write_mx32_mxb(mx, program.package_name, image_path);
-                    std::cout << "wrote " << image_path.string() << " (mx32/v9)\n";
-                }
-                exit_status =
-                    munx::vm::run_bytecode_file(image_path, arguments);
-                return;
-            }
             if (path.extension() != ".mxb")
             {
                 const std::string source = read_file_or_fail(path);
@@ -246,6 +227,11 @@ bool compile_native_file(const std::filesystem::path &source_path,
                 munx::bytecode_compiler compiler{path.parent_path(), program};
                 image.replace_extension(".mxb");
                 compiler.compile_to_file(image);
+                if (munx::active_compile_context != nullptr &&
+                    munx::active_compile_context->failed())
+                {
+                    return;
+                }
             }
             exit_status = munx::vm::run_bytecode_file(image, arguments);
         });
@@ -270,6 +256,11 @@ int main(int argc, char *argv[])
         std::filesystem::absolute(argv[0]).string());
 #endif
 
+    if (argc >= 2 && std::string{argv[1]} == "--analyze-server")
+    {
+        return munx::analyze::run_analyze_server(std::cin, std::cout);
+    }
+
     if (argc < 2)
     {
         print_usage(argv[0]);
@@ -281,9 +272,11 @@ int main(int argc, char *argv[])
     bool decode_bytecode_flag = false;
     bool decompile_bytecode_flag = false;
     bool run_program_flag = false;
-    bool mx32_flag = false;
     bool native_flag = false;
     bool files_mode = false;
+    bool analyze_flag = false;
+    bool analyze_stdin = false;
+    std::filesystem::path analyze_filename;
     std::filesystem::path native_output;
     bool backend_explicit = false;
     bool asm_explicit = false;
@@ -307,13 +300,27 @@ int main(int argc, char *argv[])
         {
             run_program_flag = true;
         }
-        else if (arg == "--mx32")
-        {
-            mx32_flag = true;
-        }
         else if (arg == "--native")
         {
             native_flag = true;
+        }
+        else if (arg == "--analyze")
+        {
+            analyze_flag = true;
+        }
+        else if (arg == "--stdin")
+        {
+            analyze_stdin = true;
+        }
+        else if (arg == "--filename")
+        {
+            if (i + 1 >= argc)
+            {
+                std::cerr << "--filename requires a path\n";
+                print_usage(argv[0]);
+                return 1;
+            }
+            analyze_filename = argv[++i];
         }
         else if (arg == "--asm")
         {
@@ -420,7 +427,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (source_paths.empty())
+    if (source_paths.empty() && !(analyze_flag && analyze_stdin))
     {
         if (files_mode)
         {
@@ -443,13 +450,44 @@ int main(int argc, char *argv[])
         static_cast<unsigned>(decode_bytecode_flag) +
         static_cast<unsigned>(decompile_bytecode_flag) +
         static_cast<unsigned>(run_program_flag) +
-        static_cast<unsigned>(native_flag);
+        static_cast<unsigned>(native_flag) +
+        static_cast<unsigned>(analyze_flag);
     if (output_mode_count > 1)
     {
-        std::cerr << "--native, --run, --tokens, --ast, --decode, and "
-                     "--decompile are mutually exclusive\n";
+        std::cerr << "--native, --run, --tokens, --ast, --decode, "
+                     "--decompile, and --analyze are mutually exclusive\n";
         print_usage(argv[0]);
         return 1;
+    }
+
+    if (analyze_stdin && !analyze_flag)
+    {
+        std::cerr << "--stdin requires --analyze\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (!analyze_filename.empty() && !analyze_flag)
+    {
+        std::cerr << "--filename requires --analyze\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    if (analyze_flag)
+    {
+        std::filesystem::path path =
+            !analyze_filename.empty()
+                ? analyze_filename
+                : (!source_paths.empty() ? source_paths.front()
+                                         : std::filesystem::path{"stdin.mx"});
+        std::optional<std::string> overlay;
+        if (analyze_stdin)
+        {
+            std::ostringstream buffer;
+            buffer << std::cin.rdbuf();
+            overlay = buffer.str();
+        }
+        return munx::analyze::run_analyze_batch(path, overlay, std::cout);
     }
 
     if (backend_explicit && !native_flag)
@@ -492,17 +530,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (mx32_flag && !run_program_flag && !native_flag)
-    {
-        std::cerr << "--mx32 requires --run (or use with native later)\n";
-        print_usage(argv[0]);
-        return 1;
-    }
-
     if (run_program_flag)
     {
-        return run_program(source_paths.front(), std::move(program_arguments),
-                           mx32_flag);
+        return run_program(source_paths.front(), std::move(program_arguments));
     }
 
     if (native_flag)

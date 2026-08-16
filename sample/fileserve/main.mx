@@ -1,0 +1,95 @@
+package fileserve
+load_packages {types, server, accesslog}
+
+// fileserve — real HTTP/1.1 static file server.
+//
+// Serve a directory over TCP so browsers, curl, and LAN clients can fetch
+// files. Supports GET/HEAD, MIME types, index.html, path traversal checks,
+// and Combined Log Format access logging.
+//
+//   ./munxc --run sample/fileserve/main.mx -- --root sample/fileserve/www
+//   ./munxc --run sample/fileserve/main.mx -- --root ./dist --port 3000
+//   ./munxc --run sample/fileserve/main.mx -- --root . --host 127.0.0.1 --log access.log
+
+print = fix(open(io_type::tty, out))
+println = fix(open(io_type::tty, out))
+
+func usage(): void {
+    println("fileserve — HTTP/1.1 static file server")
+    println("")
+    println("usage: fileserve [options]")
+    println("")
+    println("options:")
+    println("  --root DIR     document root (default: .)")
+    println("  --host ADDR    bind address (default: 0.0.0.0)")
+    println("  --port N       listen port (default: 8080)")
+    println("  --log PATH     Combined Log Format access log (optional)")
+    println("  --help         show this help")
+    println("")
+    println("tip: run under --interp for best stability with sockets")
+}
+
+host = "0.0.0.0"
+port = 8080
+root = "."
+log_path = ""
+
+i = 0
+loop i < argv.len {
+    arg = argv[i]
+    if arg == "--help" || arg == "-h" {
+        usage()
+        return
+    } else if arg == "--root" {
+        if i + 1 >= argv.len {
+            fail("--root requires a directory")
+        }
+        root = argv[i + 1]
+        i += 1
+    } else if arg == "--host" {
+        if i + 1 >= argv.len {
+            fail("--host requires an address")
+        }
+        host = argv[i + 1]
+        i += 1
+    } else if arg == "--port" {
+        if i + 1 >= argv.len {
+            fail("--port requires a number")
+        }
+        monitor {
+            port = cast[int](argv[i + 1])
+        } trap(err: exception) {
+            fail(concat("invalid --port: ", argv[i + 1]))
+        }
+        if port < 1 || port > 65535 {
+            fail("--port out of range")
+        }
+        i += 1
+    } else if arg == "--log" {
+        if i + 1 >= argv.len {
+            fail("--log requires a path")
+        }
+        log_path = argv[i + 1]
+        i += 1
+    } else if arg == "--" {
+        // ignore argv separators from runners
+    } else {
+        fail(concat("unknown option: ", arg, " (try --help)"))
+    }
+    i += 1
+}
+
+configure(host, port, root)
+start_access_log(log_path)
+if log_path != "" {
+    println(concat("access log: ", log_path))
+}
+
+monitor {
+    serve_forever()
+} trap(err: exception) {
+    stop_access_log()
+    fail(concat("fileserve fatal: ", cast[string](err)))
+}
+
+stop_access_log()

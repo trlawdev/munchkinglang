@@ -12,6 +12,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(munx_tests
   compile_run_test.cpp
+  analyze_test.cpp
 )
 
 target_include_directories(munx_tests PRIVATE

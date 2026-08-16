@@ -670,13 +670,22 @@ namespace munx
             case ast::stmt_type::ObjectDecl:
             {
                 const auto &object = ast::as_stmt<ast::object_decl>(stmt);
-                write_line("(object %s%s", object.name.c_str(), loc.c_str());
+                write_line("(%s %s%s", object.is_trait ? "trait" : "object",
+                           object.name.c_str(), loc.c_str());
                 indent();
                 for (const auto &field : object.fields)
                 {
                     write_line("(field %s%s", field.name.c_str(), at(field.loc).c_str());
                     indent();
                     print_type(*field.type);
+                    if (field.constraint)
+                    {
+                        write_line("(constraint");
+                        indent();
+                        print_expr(*field.constraint);
+                        dedent();
+                        write_line(")");
+                    }
                     dedent();
                     write_line(")");
                 }

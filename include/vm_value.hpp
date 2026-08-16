@@ -38,6 +38,7 @@ struct lock_object;
 struct thread_object;
 struct library_object;
 struct foreign_callable_object;
+struct pointer_object;
 
 struct map_object;
 
@@ -53,6 +54,7 @@ using lock_ref = std::shared_ptr<lock_object>;
 using thread_ref = std::shared_ptr<thread_object>;
 using library_ref = std::shared_ptr<library_object>;
 using foreign_callable_ref = std::shared_ptr<foreign_callable_object>;
+using pointer_ref = std::shared_ptr<pointer_object>;
 using map_ref = std::shared_ptr<map_object>;
 
 /// `Enum::Member` as produced by PUSH_ENUM.
@@ -229,7 +231,8 @@ using value_data = std::variant<
     lock_ref,
     thread_ref,
     library_ref,
-    foreign_callable_ref>;
+    foreign_callable_ref,
+    pointer_ref>;
 
 /// A dynamically typed munx runtime value.
 struct value
@@ -501,6 +504,12 @@ struct foreign_callable_object
     void *fn{nullptr};
 };
 
+/// Stable cell for `pointer(value)` — address is passed to foreign calls.
+struct pointer_object
+{
+    int64_t cell{0};
+};
+
 inline const char *type_name(const value &item)
 {
     struct namer
@@ -533,6 +542,7 @@ inline const char *type_name(const value &item)
         {
             return "foreign callable";
         }
+        const char *operator()(const pointer_ref &) const { return "pointer"; }
     };
     return std::visit(namer{}, item.data);
 }
@@ -785,6 +795,10 @@ inline std::string to_display_string(const value &item)
         std::string operator()(const foreign_callable_ref &fn) const
         {
             return "<foreign " + fn->symbol + ">";
+        }
+        std::string operator()(const pointer_ref &p) const
+        {
+            return p ? ("<pointer " + std::to_string(p->cell) + ">") : "<pointer>";
         }
     };
     return std::visit(printer{}, item.data);

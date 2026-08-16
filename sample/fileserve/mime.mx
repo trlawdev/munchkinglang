@@ -1,0 +1,58 @@
+package mime
+
+// Content-Type lookup by file extension (lowercase, no leading dot).
+
+func content_type(ext: string): string {
+    if ext == "html" || ext == "htm" {
+        return "text/html; charset=utf-8"
+    }
+    if ext == "css" {
+        return "text/css; charset=utf-8"
+    }
+    if ext == "js" || ext == "mjs" {
+        return "text/javascript; charset=utf-8"
+    }
+    if ext == "json" {
+        return "application/json; charset=utf-8"
+    }
+    if ext == "txt" || ext == "log" || ext == "md" {
+        return "text/plain; charset=utf-8"
+    }
+    if ext == "svg" {
+        return "image/svg+xml"
+    }
+    if ext == "png" {
+        return "image/png"
+    }
+    if ext == "jpg" || ext == "jpeg" {
+        return "image/jpeg"
+    }
+    if ext == "gif" {
+        return "image/gif"
+    }
+    if ext == "webp" {
+        return "image/webp"
+    }
+    if ext == "ico" {
+        return "image/x-icon"
+    }
+    if ext == "woff" {
+        return "font/woff"
+    }
+    if ext == "woff2" {
+        return "font/woff2"
+    }
+    if ext == "pdf" {
+        return "application/pdf"
+    }
+    if ext == "xml" {
+        return "application/xml"
+    }
+    if ext == "wasm" {
+        return "application/wasm"
+    }
+    if ext == "map" {
+        return "application/json"
+    }
+    return "application/octet-stream"
+}

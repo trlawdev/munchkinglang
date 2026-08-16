@@ -43,6 +43,10 @@ public:
 
         type_checker::check_packages(source_dir, program,
                                      resolver.imports_package_programs);
+        if (active_compile_context != nullptr && active_compile_context->failed())
+        {
+            return mod_;
+        }
 
         mod_.entry_package = program.package_name;
         collect_functions(program);
@@ -79,7 +83,11 @@ private:
         {
             if (stmt->type == ast::stmt_type::ObjectDecl)
             {
-                object_ctors_[ast::as_stmt<ast::object_decl>(*stmt).name] = true;
+                const auto &decl = ast::as_stmt<ast::object_decl>(*stmt);
+                if (!decl.is_trait)
+                {
+                    object_ctors_[decl.name] = true;
+                }
             }
         }
     }

@@ -1,0 +1,176 @@
+package pathutil
+
+// Path helpers: extension, join, safety checks, query stripping.
+
+func path_extension(path: string): string {
+    ext = ""
+    i = 0
+    last_dot = 0 - 1
+    last_slash = 0 - 1
+    loop i < path.len {
+        ch = path[i]
+        if ch == '/' {
+            last_slash = i
+        }
+        if ch == '.' {
+            last_dot = i
+        }
+        i += 1
+    }
+    // Extension only counts if the dot is after the final slash.
+    if last_dot < 0 || last_dot < last_slash || last_dot + 1 >= path.len {
+        return ""
+    }
+    j = last_dot + 1
+    loop j < path.len {
+        ext = concat(ext, cast[string](path[j]))
+        j += 1
+    }
+    return ext
+}
+
+func has_extension(path: string): bool {
+    return path_extension(path) != ""
+}
+
+func ends_with_slash(path: string): bool {
+    if path.len == 0 {
+        return false
+    }
+    return path[path.len - 1] == '/'
+}
+
+func strip_query_and_fragment(raw: string): tuple[string, string] {
+    path = raw
+    query = ""
+    i = 0
+    qpos = 0 - 1
+    hpos = 0 - 1
+    loop i < raw.len {
+        if raw[i] == '?' && qpos < 0 {
+            qpos = i
+        }
+        if raw[i] == '#' && hpos < 0 {
+            hpos = i
+        }
+        i += 1
+    }
+    cut = raw.len
+    if qpos >= 0 {
+        cut = qpos
+        if hpos > qpos {
+            // query runs until fragment
+            qend = hpos
+            query = slice_string(raw, qpos + 1, qend)
+        } else {
+            query = slice_string(raw, qpos + 1, raw.len)
+        }
+    } else if hpos >= 0 {
+        cut = hpos
+    }
+    path = slice_string(raw, 0, cut)
+    return {path, query}
+}
+
+func slice_string(s: string, start: int, end: int): string {
+    out = ""
+    i = start
+    if i < 0 {
+        i = 0
+    }
+    limit = end
+    if limit > s.len {
+        limit = s.len
+    }
+    loop i < limit {
+        out = concat(out, cast[string](s[i]))
+        i += 1
+    }
+    return out
+}
+
+func join_root(root: string, rel: string): string {
+    base = root
+    if base.len == 0 {
+        base = "."
+    }
+    if ends_with_slash(base) {
+        if rel.len > 0 && rel[0] == '/' {
+            return concat(base, slice_string(rel, 1, rel.len))
+        }
+        return concat(base, rel)
+    }
+    if rel.len > 0 && rel[0] == '/' {
+        return concat(base, rel)
+    }
+    return concat(base, "/", rel)
+}
+
+// Reject traversal. Percent-encoded dots are also rejected.
+func is_safe_url_path(path: string): bool {
+    if path.len == 0 {
+        return false
+    }
+    if path[0] != '/' {
+        return false
+    }
+    i = 0
+    loop i < path.len {
+        ch = path[i]
+        if ch == '\\' {
+            return false
+        }
+        // Reject ".." as a path segment: /../ or trailing /..
+        if ch == '.' {
+            prev_sep = false
+            if i == 0 {
+                prev_sep = true
+            } else if path[i - 1] == '/' {
+                prev_sep = true
+            }
+            if prev_sep {
+                if i + 1 < path.len && path[i + 1] == '.' {
+                    next = i + 2
+                    if next >= path.len || path[next] == '/' {
+                        return false
+                    }
+                }
+            }
+        }
+        i += 1
+    }
+    if has_substring_regex(path, r"%2[eE]") {
+        return false
+    }
+    if has_substring_regex(path, r"%00") {
+        return false
+    }
+    return true
+}
+
+func decode_basic(path: string): string {
+    // Minimal percent-decoding for spaces and common safe chars only.
+    // Unsupported / malformed sequences are left as-is.
+    out = ""
+    i = 0
+    loop i < path.len {
+        if path[i] == '%' && i + 2 < path.len {
+            h1 = path[i + 1]
+            h2 = path[i + 2]
+            if h1 == '2' && h2 == '0' {
+                out = concat(out, " ")
+                i += 3
+            } else if h1 == '2' && (h2 == 'F' || h2 == 'f') {
+                // Encoded slash is not allowed as a path separator substitute.
+                return ""
+            } else {
+                out = concat(out, cast[string](path[i]))
+                i += 1
+            }
+        } else {
+            out = concat(out, cast[string](path[i]))
+            i += 1
+        }
+    }
+    return out
+}

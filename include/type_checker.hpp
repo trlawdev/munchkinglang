@@ -3,10 +3,12 @@
 #include "ast.hpp"
 #include "errors.hpp"
 #include "logger.hpp"
+#include "semantic_index.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -198,7 +200,7 @@ struct resolved_type
         switch (tag)
         {
         case kind::Unknown:
-            return "<unknown>";
+            return "any";
         case kind::Void:
             return "void";
         case kind::Null:
@@ -235,7 +237,7 @@ struct resolved_type
         {
             if (elements.empty())
             {
-                return "Lambda[{ } => <unknown>]";
+                return "Lambda[{ } => any]";
             }
             std::string text = "Lambda[{";
             for (size_t i = 0; i + 1 < elements.size(); ++i)
@@ -328,6 +330,39 @@ public:
         return std::move(checker.expr_types_);
     }
 
+    /// Type-check packages and fill @p index with defs, uses, types, and functions.
+    static type_annotation_map check_packages_indexed(
+        const std::filesystem::path &main_dir_path, const ast::program &main,
+        const std::vector<ast::program> &imports, semantic_index &index)
+    {
+        type_checker checker{main_dir_path, true, &index};
+        for (const ast::program &imported : imports)
+        {
+            checker.check_program_body(imported);
+        }
+        checker.check_program_body(main);
+        checker.export_scope_tables();
+        return std::move(checker.expr_types_);
+    }
+
+    /// Type-check packages from shared import programs (analyze preamble reuse).
+    static type_annotation_map check_packages_indexed(
+        const std::filesystem::path &main_dir_path, const ast::program &main,
+        const std::vector<std::shared_ptr<ast::program>> &imports, semantic_index &index)
+    {
+        type_checker checker{main_dir_path, true, &index};
+        for (const auto &imported : imports)
+        {
+            if (imported)
+            {
+                checker.check_program_body(*imported);
+            }
+        }
+        checker.check_program_body(main);
+        checker.export_scope_tables();
+        return std::move(checker.expr_types_);
+    }
+
     /// Check a single translation unit.
     /// @throws compilation_error on the first type error.
     static void check_single_program(const ast::program &program)
@@ -341,14 +376,60 @@ private:
     {
         std::string name;
         resolved_type type;
+        /// Optional constraint expression (`_` = field value); owned by AST.
+        const ast::expr_node *constraint{nullptr};
     };
 
     struct function_sig
     {
         std::vector<resolved_type> params;
+        std::vector<std::string> param_names;
         resolved_type ret;
         ast::source_loc loc{};
         bool variadic{false};
+        /// Optional IDE-facing signature; when set, preferred over computed form.
+        std::string display_signature;
+
+        [[nodiscard]] std::string format_signature(const std::string &name) const
+        {
+            if (!display_signature.empty())
+            {
+                return display_signature;
+            }
+            std::string text = name;
+            text += '(';
+            if (variadic && params.empty())
+            {
+                text += "...";
+            }
+            else
+            {
+                for (size_t i = 0; i < params.size(); ++i)
+                {
+                    if (i != 0)
+                    {
+                        text += ", ";
+                    }
+                    if (i < param_names.size() && !param_names[i].empty())
+                    {
+                        text += param_names[i];
+                        text += ": ";
+                    }
+                    text += params[i].stringify();
+                }
+                if (variadic)
+                {
+                    if (!params.empty())
+                    {
+                        text += ", ";
+                    }
+                    text += "...";
+                }
+            }
+            text += "): ";
+            text += ret.stringify();
+            return text;
+        }
     };
 
     struct enum_info
@@ -363,6 +444,7 @@ private:
         std::unordered_map<std::string, function_sig> funcs;
         std::unordered_map<std::string, enum_info> enums;
         std::unordered_map<std::string, std::vector<object_field>> objects;
+        std::unordered_map<std::string, std::vector<object_field>> traits;
         scope_frame *parent{nullptr};
 
         [[nodiscard]] resolved_type lookup_var(std::string_view name) const
@@ -416,6 +498,24 @@ private:
             }
             return nullptr;
         }
+
+        [[nodiscard]] const std::vector<object_field> *lookup_trait(std::string_view name) const
+        {
+            for (const scope_frame *frame = this; frame != nullptr; frame = frame->parent)
+            {
+                const auto found = frame->traits.find(std::string{name});
+                if (found != frame->traits.end())
+                {
+                    return &found->second;
+                }
+            }
+            return nullptr;
+        }
+
+        [[nodiscard]] bool is_trait_name(std::string_view name) const
+        {
+            return lookup_trait(name) != nullptr;
+        }
     };
 
     std::filesystem::path main_dir_path_;
@@ -425,11 +525,123 @@ private:
     bool saw_return_{false};
     bool annotate_{false};
     type_annotation_map expr_types_{};
+    semantic_index *index_{nullptr};
+    /// Def locations for names declared in the current package (for use→def links).
+    std::unordered_map<std::string, diag_span> def_spans_;
 
-    explicit type_checker(std::filesystem::path main_dir_path = {}, bool annotate = false)
-        : main_dir_path_(std::move(main_dir_path)), annotate_(annotate)
+    explicit type_checker(std::filesystem::path main_dir_path = {}, bool annotate = false,
+                          semantic_index *index = nullptr)
+        : main_dir_path_(std::move(main_dir_path)), annotate_(annotate), index_(index)
     {
         register_prelude();
+    }
+
+    void record_occ(const std::string &name, symbol_kind kind, const std::string &type,
+                    const ast::source_loc &loc, bool is_def = false,
+                    const diag_span &def = {})
+    {
+        if (index_ == nullptr || loc.line == 0)
+        {
+            return;
+        }
+        semantic_occurrence occ{};
+        occ.name = name;
+        occ.kind = kind;
+        occ.type = type;
+        occ.span = make_span(loc, name.size());
+        occ.is_def = is_def;
+        occ.def = def;
+        if (is_def)
+        {
+            def_spans_[name] = occ.span;
+        }
+        else if (occ.def.line == 0)
+        {
+            const auto found = def_spans_.find(name);
+            if (found != def_spans_.end())
+            {
+                occ.def = found->second;
+            }
+        }
+        index_->add_occurrence(std::move(occ));
+    }
+
+    void export_scope_tables()
+    {
+        if (index_ == nullptr)
+        {
+            return;
+        }
+        for (const auto &[name, fields] : package_scope_.objects)
+        {
+            type_info_entry entry{};
+            entry.name = name;
+            entry.kind = "object";
+            for (const auto &field : fields)
+            {
+                entry.fields.emplace_back(field.name, field.type.stringify());
+            }
+            const auto found = def_spans_.find(name);
+            if (found != def_spans_.end())
+            {
+                entry.def = found->second;
+            }
+            index_->types.push_back(std::move(entry));
+        }
+        for (const auto &[name, fields] : package_scope_.traits)
+        {
+            type_info_entry entry{};
+            entry.name = name;
+            entry.kind = "trait";
+            for (const auto &field : fields)
+            {
+                entry.fields.emplace_back(field.name, field.type.stringify());
+            }
+            const auto found = def_spans_.find(name);
+            if (found != def_spans_.end())
+            {
+                entry.def = found->second;
+            }
+            index_->types.push_back(std::move(entry));
+        }
+        for (const auto &[name, info] : package_scope_.enums)
+        {
+            type_info_entry entry{};
+            entry.name = name;
+            entry.kind = "enum";
+            entry.members = info.members;
+            entry.def = make_span(info.loc, name.size());
+            index_->types.push_back(std::move(entry));
+        }
+        for (const auto &[name, sig] : package_scope_.funcs)
+        {
+            function_info_entry entry{};
+            entry.name = name;
+            entry.return_type = sig.ret.stringify();
+            entry.signature = sig.format_signature(name);
+            for (size_t i = 0; i < sig.params.size(); ++i)
+            {
+                const std::string pname =
+                    i < sig.param_names.size() && !sig.param_names[i].empty()
+                        ? sig.param_names[i]
+                        : ("arg" + std::to_string(i));
+                entry.params.emplace_back(pname, sig.params[i].stringify());
+            }
+            if (sig.variadic)
+            {
+                entry.params.emplace_back("...", "");
+            }
+            const auto found = def_spans_.find(name);
+            if (found != def_spans_.end())
+            {
+                entry.def = found->second;
+            }
+            else
+            {
+                entry.def = make_span(sig.loc, name.size());
+            }
+            index_->functions.push_back(std::move(entry));
+        }
     }
 
     void register_prelude()
@@ -446,62 +658,100 @@ private:
         auto arr_ret = [] { return resolved_type::array(resolved_type::unknown()); };
 
         auto declare = [&](std::string_view name, std::vector<resolved_type> params,
-                           resolved_type ret, bool variadic = false) {
+                           resolved_type ret, bool variadic = false,
+                           std::vector<std::string> param_names = {},
+                           std::string display_signature = {}) {
             function_sig sig{};
             sig.params = std::move(params);
+            sig.param_names = std::move(param_names);
+            if (sig.param_names.size() < sig.params.size())
+            {
+                sig.param_names.resize(sig.params.size());
+                for (size_t i = 0; i < sig.params.size(); ++i)
+                {
+                    if (sig.param_names[i].empty())
+                    {
+                        sig.param_names[i] = "arg" + std::to_string(i);
+                    }
+                }
+            }
             sig.ret = std::move(ret);
             sig.variadic = variadic;
+            sig.display_signature = std::move(display_signature);
             package_scope_.funcs.emplace(std::string{name}, std::move(sig));
         };
 
-        declare("print", {}, void_ret(), true);
-        declare("println", {}, void_ret(), true);
-        declare("readln", {}, str_ret(), true);
-        declare("fail", {}, void_ret(), true);
-        declare("fix", {any()}, any());
-        declare("load_library", {str_ret()}, any());
-        declare("resolve_callable", {any(), str_ret()}, any());
-        declare("close_library", {any()}, void_ret());
-        declare("concat", {}, str_ret(), true);
-        declare("trim", {str_ret()}, str_ret());
-        declare("split", {any(), any()}, arr_ret(), true);
-        declare("has_substring_regex", {str_ret(), any()}, bool_ret());
-        declare("len", {any()}, int_ret());
-        declare("queue", {}, arr_ret(), true);
-        declare("append", {arr_ret(), any()}, arr_ret());
-        declare("push", {arr_ret(), any()}, arr_ret());
-        declare("pop", {arr_ret()}, any());
-        declare("remove_at", {arr_ret(), int_ret()}, arr_ret());
-        declare("open", {}, any(), true);
-        declare("read", {any(), any()}, any(), true);
-        declare("write", {any(), any(), any()}, int_ret(), true);
-        declare("close", {any()}, void_ret());
-        declare("bind", {any(), any(), any()}, void_ret(), true);
-        declare("listen", {any(), any()}, void_ret(), true);
-        declare("accept", {any()}, resolved_type::tuple({any(), any()}));
-        declare("thread", {any(), any()}, any(), true);
-        declare("join", {any()}, void_ret(), true);
-        declare("pipe", {str_ret(), any()}, any(), true);
-        declare("channel", {str_ret()}, any());
-        declare("sleep", {int_ret()}, void_ret());
-        declare("get", {any(), any()}, any());
-        declare("insert", {any(), any()}, void_ret());
-        declare("env", {str_ret()}, any());
-        declare("parse_json", {str_ret()}, any());
-        declare("json_field", {any(), str_ret()}, any(), true);
-        declare("json_require", {any(), str_ret()}, any(), true);
+        declare("print", {}, void_ret(), true, {}, "print(...): void");
+        declare("println", {}, void_ret(), true, {}, "println(...): void");
+        declare("readln", {}, str_ret(), true, {}, "readln(...): string");
+        declare("fail", {}, void_ret(), true, {}, "fail(...): void");
+        declare("fix", {any()}, any(), false, {"value"}, "fix(value: any): any");
+        declare("load_library", {str_ret()}, any(), false, {"path"},
+                "load_library(path: string): library");
+        declare("resolve_callable", {any(), str_ret()}, any(), false, {"lib", "name"},
+                "resolve_callable(lib: library, name: string): callable");
+        declare("close_library", {any()}, void_ret(), false, {"lib"},
+                "close_library(lib: library): void");
+        declare("pointer", {any()}, any(), false, {"value"},
+                "pointer(value: any): pointer");
+        declare("concat", {}, str_ret(), true, {}, "concat(...): string");
+        declare("trim", {str_ret()}, str_ret(), false, {"s"}, "trim(s: string): string");
+        declare("split", {any(), any()}, arr_ret(), true, {"value", "sep"},
+                "split(value: any, sep: any, ...): [any]");
+        declare("has_substring_regex", {str_ret(), any()}, bool_ret(), false,
+                {"s", "pattern"}, "has_substring_regex(s: string, pattern: any): bool");
+        declare("len", {any()}, int_ret(), false, {"value"}, "len(value: any): int");
+        declare("queue", {}, arr_ret(), true, {}, "queue(...): [any]");
+        declare("append", {arr_ret(), any()}, arr_ret(), false, {"arr", "item"},
+                "append(arr: [any], item: any): [any]");
+        declare("push", {arr_ret(), any()}, arr_ret(), false, {"arr", "item"},
+                "push(arr: [any], item: any): [any]");
+        declare("pop", {arr_ret()}, any(), false, {"arr"}, "pop(arr: [any]): any");
+        declare("remove_at", {arr_ret(), int_ret()}, arr_ret(), false, {"arr", "index"},
+                "remove_at(arr: [any], index: int): [any]");
+        declare("open", {}, any(), true, {}, "open(...): handle");
+        declare("read", {any(), any()}, any(), true, {"handle", "n"},
+                "read(handle: any, n: any, ...): any");
+        declare("write", {any(), any(), any()}, int_ret(), true, {"handle", "data", "n"},
+                "write(handle: any, data: any, n: any, ...): int");
+        declare("close", {any()}, void_ret(), false, {"handle"},
+                "close(handle: any): void");
+        declare("bind", {any(), any(), any()}, void_ret(), true, {"sock", "host", "port"},
+                "bind(sock: socket, host: any, port: any, ...): void");
+        declare("listen", {any(), any()}, void_ret(), true, {"sock", "backlog"},
+                "listen(sock: socket, backlog: any, ...): void");
+        declare("accept", {any()}, resolved_type::tuple({any(), any()}), false, {"sock"},
+                "accept(sock: socket): tuple[socket, any]");
+        declare("thread", {any(), any()}, any(), true, {"fn"},
+                "thread(fn: any, ...): thread");
+        declare("join", {any()}, void_ret(), true, {"threads"},
+                "join(threads: any, ...): void");
+        declare("pipe", {str_ret(), any()}, any(), false, {"name", "mode"},
+                "pipe(name: string, mode: in|out|subscribe): pipe");
+        declare("channel", {str_ret()}, any(), false, {"id"},
+                "channel(id: string): channel");
+        declare("sleep", {int_ret()}, void_ret(), false, {"ms"}, "sleep(ms: int): void");
+        declare("get", {any(), any()}, any(), false, {"map", "key"},
+                "get(map: map, key: any): any");
+        declare("insert", {any(), any()}, void_ret(), false, {"map", "entries"},
+                "insert(map: map, entries: map): void");
+        declare("env", {str_ret()}, any(), false, {"name"}, "env(name: string): any");
+        declare("parse_json", {str_ret()}, any(), false, {"text"},
+                "parse_json(text: string): any");
+        declare("json_field", {any(), str_ret()}, any(), true, {"obj", "key"},
+                "json_field(obj: any, key: string, ...): any");
+        declare("json_require", {any(), str_ret()}, any(), true, {"value", "kind"},
+                "json_require(value: any, kind: string, ...): any");
     }
 
     static void fail(const ast::source_loc &loc, const std::string &message)
     {
-        fail_compile(loc.file + ':' + std::to_string(loc.line) + ':' +
-                                std::to_string(loc.column) + ": error: " + message);
+        fail_compile_at(loc.file, loc.line, loc.column, message);
     }
 
     static void warn_at(const ast::source_loc &loc, const std::string &message)
     {
-        std::cerr << loc.file << ':' << loc.line << ':' << loc.column << ": ";
-        std::cerr << log_level::warn << "warning: " << message << reset{} << '\n';
+        warn_compile_at(loc.file, loc.line, loc.column, message);
     }
 
     [[nodiscard]] static std::optional<int64_t>
@@ -565,7 +815,8 @@ private:
         }
     }
 
-    static bool compatible(const resolved_type &expected, const resolved_type &actual)
+    [[nodiscard]] bool types_compatible(const resolved_type &expected,
+                                        const resolved_type &actual) const
     {
         if (expected.is_unknown() || actual.is_unknown())
         {
@@ -573,6 +824,35 @@ private:
         }
         if (actual.tag == resolved_type::kind::Null)
         {
+            return true;
+        }
+        // Trait parameter: accept any object that structurally matches.
+        if (expected.tag == resolved_type::kind::Named &&
+            current_scope_->is_trait_name(expected.name) &&
+            actual.tag == resolved_type::kind::Named)
+        {
+            const auto *trait = current_scope_->lookup_trait(expected.name);
+            const auto *object = current_scope_->lookup_object(actual.name);
+            if (trait == nullptr || object == nullptr)
+            {
+                return false;
+            }
+            for (const object_field &need : *trait)
+            {
+                const object_field *have = nullptr;
+                for (const object_field &f : *object)
+                {
+                    if (f.name == need.name)
+                    {
+                        have = &f;
+                        break;
+                    }
+                }
+                if (have == nullptr || !types_compatible(need.type, have->type))
+                {
+                    return false;
+                }
+            }
             return true;
         }
         if (expected.tag == resolved_type::kind::EnumMember &&
@@ -601,7 +881,7 @@ private:
             {
                 return true;
             }
-            return compatible(expected.elements.front(), actual.elements.front());
+            return types_compatible(expected.elements.front(), actual.elements.front());
         }
         if (expected.tag == resolved_type::kind::Tuple &&
             actual.tag == resolved_type::kind::Tuple)
@@ -612,7 +892,7 @@ private:
             }
             for (size_t i = 0; i < expected.elements.size(); ++i)
             {
-                if (!compatible(expected.elements[i], actual.elements[i]))
+                if (!types_compatible(expected.elements[i], actual.elements[i]))
                 {
                     return false;
                 }
@@ -626,8 +906,8 @@ private:
             {
                 return true;
             }
-            return compatible(expected.elements[0], actual.elements[0]) &&
-                   compatible(expected.elements[1], actual.elements[1]);
+            return types_compatible(expected.elements[0], actual.elements[0]) &&
+                   types_compatible(expected.elements[1], actual.elements[1]);
         }
         if (expected.tag == resolved_type::kind::Lambda &&
             actual.tag == resolved_type::kind::Lambda)
@@ -650,13 +930,374 @@ private:
         return expected == actual;
     }
 
-    static void require_compatible(const ast::source_loc &loc, const resolved_type &expected,
+    void require_compatible(const ast::source_loc &loc, const resolved_type &expected,
                                  const resolved_type &actual, std::string_view context)
     {
-        if (!compatible(expected, actual))
+        if (!types_compatible(expected, actual))
         {
             fail(loc, std::string{context} + ": expected `" + expected.stringify() +
                          "`, got `" + actual.stringify() + '`');
+        }
+    }
+
+    /// Type-check field constraints: `_` is bound to the field's type.
+    void check_object_decl(const ast::object_decl &decl, const ast::source_loc &loc)
+    {
+        for (const ast::object_field &field : decl.fields)
+        {
+            if (field.constraint == nullptr)
+            {
+                continue;
+            }
+            scope_frame body{};
+            body.parent = current_scope_;
+            body.vars.emplace("_", resolve_type_node(*field.type));
+            scope_frame *previous = current_scope_;
+            current_scope_ = &body;
+            (void)check_expr(*field.constraint);
+            current_scope_ = previous;
+        }
+        (void)loc;
+    }
+
+    /// Compile-time constant used when folding field constraints.
+    struct const_val;
+    using const_val_ptr = std::shared_ptr<const_val>;
+    struct const_val
+    {
+        enum class tag
+        {
+            none,
+            null,
+            boolean,
+            integer,
+            floating,
+            string,
+            object
+        } kind{tag::none};
+        bool b{false};
+        int64_t i{0};
+        double f{0};
+        std::string s;
+        std::string object_type;
+        std::vector<std::pair<std::string, const_val_ptr>> fields;
+
+        [[nodiscard]] static const_val make_null()
+        {
+            const_val v;
+            v.kind = tag::null;
+            return v;
+        }
+        [[nodiscard]] static const_val make_bool(bool value)
+        {
+            const_val v;
+            v.kind = tag::boolean;
+            v.b = value;
+            return v;
+        }
+        [[nodiscard]] static const_val make_int(int64_t value)
+        {
+            const_val v;
+            v.kind = tag::integer;
+            v.i = value;
+            return v;
+        }
+        [[nodiscard]] static const_val make_float(double value)
+        {
+            const_val v;
+            v.kind = tag::floating;
+            v.f = value;
+            return v;
+        }
+        [[nodiscard]] static const_val make_string(std::string value)
+        {
+            const_val v;
+            v.kind = tag::string;
+            v.s = std::move(value);
+            return v;
+        }
+    };
+
+    [[nodiscard]] static bool const_truthy(const const_val &v)
+    {
+        switch (v.kind)
+        {
+        case const_val::tag::none:
+            return false;
+        case const_val::tag::null:
+            return false;
+        case const_val::tag::boolean:
+            return v.b;
+        case const_val::tag::integer:
+            return v.i != 0;
+        case const_val::tag::floating:
+            return v.f != 0.0;
+        case const_val::tag::string:
+            return !v.s.empty();
+        case const_val::tag::object:
+            return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::optional<const_val> eval_const_expr(const ast::expr_node &expr,
+                                                           const const_val *underscore) const
+    {
+        switch (expr.type)
+        {
+        case ast::expr_type::NullLiteral:
+            return const_val::make_null();
+        case ast::expr_type::BoolLiteral:
+            return const_val::make_bool(ast::as<ast::bool_literal>(expr).value);
+        case ast::expr_type::IntLiteral:
+            return const_val::make_int(
+                static_cast<int64_t>(ast::as<ast::int_literal>(expr).value));
+        case ast::expr_type::FloatLiteral:
+            return const_val::make_float(
+                static_cast<double>(ast::as<ast::float_literal>(expr).value));
+        case ast::expr_type::StringLiteral:
+            return const_val::make_string(ast::as<ast::string_literal>(expr).value);
+        case ast::expr_type::CharLiteral:
+            return const_val::make_string(
+                std::string(1, ast::as<ast::char_literal>(expr).value));
+        case ast::expr_type::Identifier:
+        {
+            const std::string &name = ast::as<ast::identifier>(expr).name;
+            if (name == "_" && underscore != nullptr)
+            {
+                return *underscore;
+            }
+            return std::nullopt;
+        }
+        case ast::expr_type::Unary:
+        {
+            const auto &u = ast::as<ast::unary_expr>(expr);
+            const auto inner = eval_const_expr(*u.operand, underscore);
+            if (!inner)
+            {
+                return std::nullopt;
+            }
+            if (u.op == ast::unary_op::Not)
+            {
+                return const_val::make_bool(!const_truthy(*inner));
+            }
+            if (u.op == ast::unary_op::Neg)
+            {
+                if (inner->kind == const_val::tag::integer)
+                {
+                    return const_val::make_int(-inner->i);
+                }
+                if (inner->kind == const_val::tag::floating)
+                {
+                    return const_val::make_float(-inner->f);
+                }
+            }
+            return std::nullopt;
+        }
+        case ast::expr_type::Binary:
+        {
+            const auto &b = ast::as<ast::binary_expr>(expr);
+            const auto l = eval_const_expr(*b.left, underscore);
+            const auto r = eval_const_expr(*b.right, underscore);
+            if (!l || !r)
+            {
+                return std::nullopt;
+            }
+            auto as_num = [](const const_val &v) -> std::optional<double> {
+                if (v.kind == const_val::tag::integer)
+                {
+                    return static_cast<double>(v.i);
+                }
+                if (v.kind == const_val::tag::floating)
+                {
+                    return v.f;
+                }
+                return std::nullopt;
+            };
+            switch (b.op)
+            {
+            case ast::binary_op::And:
+                return const_val::make_bool(const_truthy(*l) && const_truthy(*r));
+            case ast::binary_op::Or:
+                return const_val::make_bool(const_truthy(*l) || const_truthy(*r));
+            case ast::binary_op::Eq:
+                if (l->kind == const_val::tag::string && r->kind == const_val::tag::string)
+                {
+                    return const_val::make_bool(l->s == r->s);
+                }
+                if (auto ln = as_num(*l), rn = as_num(*r); ln && rn)
+                {
+                    return const_val::make_bool(*ln == *rn);
+                }
+                if (l->kind == const_val::tag::boolean && r->kind == const_val::tag::boolean)
+                {
+                    return const_val::make_bool(l->b == r->b);
+                }
+                return std::nullopt;
+            case ast::binary_op::Ne:
+                if (l->kind == const_val::tag::string && r->kind == const_val::tag::string)
+                {
+                    return const_val::make_bool(l->s != r->s);
+                }
+                if (auto ln = as_num(*l), rn = as_num(*r); ln && rn)
+                {
+                    return const_val::make_bool(*ln != *rn);
+                }
+                if (l->kind == const_val::tag::boolean && r->kind == const_val::tag::boolean)
+                {
+                    return const_val::make_bool(l->b != r->b);
+                }
+                return std::nullopt;
+            case ast::binary_op::Lt:
+            case ast::binary_op::Le:
+            case ast::binary_op::Gt:
+            case ast::binary_op::Ge:
+            case ast::binary_op::Add:
+            case ast::binary_op::Sub:
+            case ast::binary_op::Mul:
+            case ast::binary_op::Div:
+            case ast::binary_op::Mod:
+            {
+                if (b.op == ast::binary_op::Add && l->kind == const_val::tag::string &&
+                    r->kind == const_val::tag::string)
+                {
+                    return const_val::make_string(l->s + r->s);
+                }
+                const auto ln = as_num(*l);
+                const auto rn = as_num(*r);
+                if (!ln || !rn)
+                {
+                    return std::nullopt;
+                }
+                const bool both_int = l->kind == const_val::tag::integer &&
+                                      r->kind == const_val::tag::integer;
+                switch (b.op)
+                {
+                case ast::binary_op::Lt:
+                    return const_val::make_bool(*ln < *rn);
+                case ast::binary_op::Le:
+                    return const_val::make_bool(*ln <= *rn);
+                case ast::binary_op::Gt:
+                    return const_val::make_bool(*ln > *rn);
+                case ast::binary_op::Ge:
+                    return const_val::make_bool(*ln >= *rn);
+                case ast::binary_op::Add:
+                    if (both_int)
+                    {
+                        return const_val::make_int(l->i + r->i);
+                    }
+                    return const_val::make_float(*ln + *rn);
+                case ast::binary_op::Sub:
+                    if (both_int)
+                    {
+                        return const_val::make_int(l->i - r->i);
+                    }
+                    return const_val::make_float(*ln - *rn);
+                case ast::binary_op::Mul:
+                    if (both_int)
+                    {
+                        return const_val::make_int(l->i * r->i);
+                    }
+                    return const_val::make_float(*ln * *rn);
+                case ast::binary_op::Div:
+                    if (*rn == 0.0)
+                    {
+                        return std::nullopt;
+                    }
+                    if (both_int)
+                    {
+                        return const_val::make_int(l->i / r->i);
+                    }
+                    return const_val::make_float(*ln / *rn);
+                case ast::binary_op::Mod:
+                    if (both_int && r->i != 0)
+                    {
+                        return const_val::make_int(l->i % r->i);
+                    }
+                    return std::nullopt;
+                default:
+                    return std::nullopt;
+                }
+            }
+            default:
+                return std::nullopt;
+            }
+        }
+        case ast::expr_type::Member:
+        {
+            const auto &mem = ast::as<ast::member_expr>(expr);
+            const auto base = eval_const_expr(*mem.object, underscore);
+            if (!base)
+            {
+                return std::nullopt;
+            }
+            if (mem.member == "len")
+            {
+                if (base->kind == const_val::tag::string)
+                {
+                    return const_val::make_int(static_cast<int64_t>(base->s.size()));
+                }
+                return std::nullopt;
+            }
+            if (base->kind == const_val::tag::object)
+            {
+                for (const auto &field : base->fields)
+                {
+                    if (field.first == mem.member && field.second)
+                    {
+                        return *field.second;
+                    }
+                }
+            }
+            return std::nullopt;
+        }
+        case ast::expr_type::Call:
+        {
+            const auto &call = ast::as<ast::call_expr>(expr);
+            if (call.callee->type != ast::expr_type::Identifier)
+            {
+                return std::nullopt;
+            }
+            const std::string &name = ast::as<ast::identifier>(*call.callee).name;
+            const auto *object = current_scope_->lookup_object(name);
+            if (object == nullptr || call.arguments.size() != object->size())
+            {
+                return std::nullopt;
+            }
+            const_val out{};
+            out.kind = const_val::tag::object;
+            out.object_type = name;
+            for (size_t i = 0; i < call.arguments.size(); ++i)
+            {
+                const auto field_val = eval_const_expr(*call.arguments[i], underscore);
+                if (!field_val)
+                {
+                    return std::nullopt;
+                }
+                out.fields.emplace_back((*object)[i].name,
+                                        std::make_shared<const_val>(*field_val));
+            }
+            return out;
+        }
+        default:
+            return std::nullopt;
+        }
+    }
+
+    /// Enforce a field constraint when the constructor argument is constant-foldable.
+    void check_field_constraint(const ast::source_loc &loc, const std::string &field_name,
+                                const ast::expr_node &constraint,
+                                const ast::expr_node &arg)
+    {
+        const auto bound = eval_const_expr(arg, nullptr);
+        if (!bound)
+        {
+            return; // non-constant: runtime check in bytecode
+        }
+        const auto ok = eval_const_expr(constraint, &*bound);
+        if (ok && !const_truthy(*ok))
+        {
+            fail(loc, "field `" + field_name + "` violates `<constraint>`");
         }
     }
 
@@ -718,6 +1359,21 @@ private:
         current_scope_ = &package_scope_;
         register_prelude();
 
+        if (index_ != nullptr)
+        {
+            index_->package_name = program.package_name;
+            index_->package_span = make_span(program.package_loc, program.package_name.size());
+            outline_symbol pkg{};
+            pkg.name = program.package_name;
+            pkg.kind = symbol_kind::package;
+            pkg.detail = "package";
+            pkg.range = index_->package_span;
+            pkg.selection = index_->package_span;
+            index_->symbols.push_back(std::move(pkg));
+            record_occ(program.package_name, symbol_kind::package, "package",
+                       program.package_loc, true);
+        }
+
         for (const auto &stmt : program.statements)
         {
             collect_declarations(*stmt);
@@ -737,23 +1393,61 @@ private:
         {
             const auto &decl = ast::as_stmt<ast::func_decl>(stmt);
             function_sig sig{};
-            sig.loc = stmt.loc;
+            sig.loc = decl.name_loc.line != 0 ? decl.name_loc : stmt.loc;
             sig.ret = resolve_type_node(*decl.return_type);
             sig.params.reserve(decl.parameters.size());
+            sig.param_names.reserve(decl.parameters.size());
             for (const ast::parameter &param : decl.parameters)
             {
                 sig.params.push_back(resolve_type_node(*param.type));
+                sig.param_names.push_back(param.name);
             }
             current_scope_->funcs.emplace(decl.name, std::move(sig));
+            if (index_ != nullptr)
+            {
+                const ast::source_loc name_loc =
+                    decl.name_loc.line != 0 ? decl.name_loc : stmt.loc;
+                const std::string signature =
+                    current_scope_->funcs[decl.name].format_signature(decl.name);
+                record_occ(decl.name, symbol_kind::func, signature, name_loc, true);
+                outline_symbol sym{};
+                sym.name = decl.name;
+                sym.kind = symbol_kind::func;
+                sym.detail = signature;
+                sym.range = make_span(stmt.loc, decl.name.size());
+                sym.selection = make_span(name_loc, decl.name.size());
+                index_->symbols.push_back(std::move(sym));
+            }
             break;
         }
         case ast::stmt_type::EnumDecl:
         {
             const auto &decl = ast::as_stmt<ast::enum_decl>(stmt);
             enum_info info{};
-            info.loc = stmt.loc;
+            info.loc = decl.name_loc.line != 0 ? decl.name_loc : stmt.loc;
             info.members = decl.members;
             current_scope_->enums.emplace(decl.name, std::move(info));
+            if (index_ != nullptr)
+            {
+                const ast::source_loc name_loc =
+                    decl.name_loc.line != 0 ? decl.name_loc : stmt.loc;
+                record_occ(decl.name, symbol_kind::type, "enum", name_loc, true);
+                outline_symbol sym{};
+                sym.name = decl.name;
+                sym.kind = symbol_kind::type;
+                sym.detail = "enum";
+                sym.range = make_span(stmt.loc, decl.name.size());
+                sym.selection = make_span(name_loc, decl.name.size());
+                for (const std::string &member : decl.members)
+                {
+                    outline_symbol child{};
+                    child.name = member;
+                    child.kind = symbol_kind::enum_member;
+                    child.detail = decl.name;
+                    sym.children.push_back(std::move(child));
+                }
+                index_->symbols.push_back(std::move(sym));
+            }
             break;
         }
         case ast::stmt_type::ObjectDecl:
@@ -763,9 +1457,42 @@ private:
             fields.reserve(decl.fields.size());
             for (const ast::object_field &field : decl.fields)
             {
-                fields.push_back(object_field{field.name, resolve_type_node(*field.type)});
+                fields.push_back(object_field{field.name, resolve_type_node(*field.type),
+                                              field.constraint.get()});
             }
-            current_scope_->objects.emplace(decl.name, std::move(fields));
+            if (decl.is_trait)
+            {
+                current_scope_->traits.emplace(decl.name, std::move(fields));
+            }
+            else
+            {
+                current_scope_->objects.emplace(decl.name, std::move(fields));
+            }
+            if (index_ != nullptr)
+            {
+                const ast::source_loc name_loc =
+                    decl.name_loc.line != 0 ? decl.name_loc : stmt.loc;
+                record_occ(decl.name, symbol_kind::type,
+                           decl.is_trait ? "trait" : "object", name_loc, true);
+                outline_symbol sym{};
+                sym.name = decl.name;
+                sym.kind = symbol_kind::type;
+                sym.detail = decl.is_trait ? "trait" : "object";
+                sym.range = make_span(stmt.loc, decl.name.size());
+                sym.selection = make_span(name_loc, decl.name.size());
+                for (const ast::object_field &field : decl.fields)
+                {
+                    outline_symbol child{};
+                    child.name = field.name;
+                    child.kind = symbol_kind::field;
+                    child.detail = resolve_type_node(*field.type).stringify();
+                    child.selection = make_span(field.loc, field.name.size());
+                    record_occ(field.name, symbol_kind::field, child.detail, field.loc,
+                               true);
+                    sym.children.push_back(std::move(child));
+                }
+                index_->symbols.push_back(std::move(sym));
+            }
             break;
         }
         case ast::stmt_type::Block:
@@ -852,7 +1579,10 @@ private:
             check_function(ast::as_stmt<ast::func_decl>(stmt));
             break;
         case ast::stmt_type::EnumDecl:
+            break;
         case ast::stmt_type::ObjectDecl:
+            check_object_decl(ast::as_stmt<ast::object_decl>(stmt), stmt.loc);
+            break;
         case ast::stmt_type::Lock:
         case ast::stmt_type::Acquire:
         case ast::stmt_type::Release:
@@ -955,10 +1685,18 @@ private:
 
         for (const auto &stmt : statements)
         {
+            if (stmt == nullptr)
+            {
+                continue;
+            }
             collect_declarations(*stmt);
         }
         for (const auto &stmt : statements)
         {
+            if (stmt == nullptr)
+            {
+                continue;
+            }
             check_stmt(*stmt);
         }
 
@@ -1011,10 +1749,15 @@ private:
         {
             const auto &fn = ast::as_stmt<ast::func_decl>(stmt);
             function_sig sig{};
-            sig.loc = stmt.loc;
+            sig.loc = fn.name_loc.line != 0 ? fn.name_loc : stmt.loc;
             sig.ret = resolved_type::unknown();
             sig.params.reserve(fn.parameters.size());
+            sig.param_names.reserve(fn.parameters.size());
             sig.params.assign(fn.parameters.size(), resolved_type::unknown());
+            for (const ast::parameter &param : fn.parameters)
+            {
+                sig.param_names.push_back(param.name);
+            }
             scope.funcs.emplace(fn.name, std::move(sig));
             break;
         }
@@ -1030,9 +1773,17 @@ private:
             std::vector<object_field> fields;
             for (const ast::object_field &field : obj.fields)
             {
-                fields.push_back(object_field{field.name, resolved_type::unknown()});
+                fields.push_back(object_field{field.name, resolved_type::unknown(),
+                                              field.constraint.get()});
             }
-            scope.objects.emplace(obj.name, std::move(fields));
+            if (obj.is_trait)
+            {
+                scope.traits.emplace(obj.name, std::move(fields));
+            }
+            else
+            {
+                scope.objects.emplace(obj.name, std::move(fields));
+            }
             break;
         }
         case ast::stmt_type::Block:
@@ -1078,12 +1829,14 @@ private:
     void register_function_in_scope(scope_frame &scope, const ast::func_decl &decl)
     {
         function_sig sig{};
-        sig.loc = decl.body->loc;
+        sig.loc = decl.name_loc.line != 0 ? decl.name_loc : decl.body->loc;
         sig.ret = resolve_type_node(*decl.return_type);
         sig.params.reserve(decl.parameters.size());
+        sig.param_names.reserve(decl.parameters.size());
         for (const ast::parameter &param : decl.parameters)
         {
             sig.params.push_back(resolve_type_node(*param.type));
+            sig.param_names.push_back(param.name);
         }
         scope.funcs.insert_or_assign(decl.name, std::move(sig));
     }
@@ -1103,6 +1856,8 @@ private:
         for (size_t i = 0; i < decl.parameters.size(); ++i)
         {
             body.vars.emplace(decl.parameters[i].name, sig->params[i]);
+            record_occ(decl.parameters[i].name, symbol_kind::param,
+                       sig->params[i].stringify(), decl.parameters[i].loc, true);
         }
         for (const auto &stmt : decl.body->statements)
         {
@@ -1177,6 +1932,9 @@ private:
             if (!targets.front().is_discard)
             {
                 current_scope_->vars.insert_or_assign(targets.front().name, value_type);
+                record_occ(targets.front().name, symbol_kind::var, value_type.stringify(),
+                           targets.front().loc.line != 0 ? targets.front().loc : loc,
+                           true);
             }
             return;
         }
@@ -1196,6 +1954,8 @@ private:
                             bound = value_type.elements.front();
                         }
                         current_scope_->vars.insert_or_assign(target.name, bound);
+                        record_occ(target.name, symbol_kind::var, bound.stringify(),
+                                   target.loc.line != 0 ? target.loc : loc, true);
                     }
                 }
                 return;
@@ -1217,11 +1977,28 @@ private:
                 continue;
             }
             current_scope_->vars.insert_or_assign(targets[i].name, value_type.elements[i]);
+            record_occ(targets[i].name, symbol_kind::var,
+                       value_type.elements[i].stringify(),
+                       targets[i].loc.line != 0 ? targets[i].loc : loc, true);
         }
     }
 
     void check_assignment(const ast::assignment_stmt &stmt, const ast::source_loc &loc)
     {
+        if (stmt.value == nullptr)
+        {
+            for (const ast::bind_target &target : stmt.targets)
+            {
+                if (target.is_discard)
+                {
+                    continue;
+                }
+                current_scope_->vars.insert_or_assign(target.name, resolved_type::unknown());
+                record_occ(target.name, symbol_kind::var, "any",
+                           target.loc.line != 0 ? target.loc : loc, true);
+            }
+            return;
+        }
         const resolved_type value_type = check_expr(*stmt.value);
 
         if (stmt.op == ast::assign_op::AddAssign)
@@ -1385,6 +2162,10 @@ private:
 
         if (callee_type.tag == resolved_type::kind::Named)
         {
+            if (current_scope_->is_trait_name(callee_type.name))
+            {
+                fail(loc, "cannot construct trait `" + callee_type.name + "`");
+            }
             const std::vector<object_field> *object = current_scope_->lookup_object(callee_type.name);
             if (object != nullptr)
             {
@@ -1399,6 +2180,11 @@ private:
                     const resolved_type arg_type = check_expr(*expr.arguments[i]);
                     require_compatible(loc, (*object)[i].type, arg_type,
                                        "constructor argument `" + (*object)[i].name + '`');
+                    if ((*object)[i].constraint != nullptr)
+                    {
+                        check_field_constraint(loc, (*object)[i].name, *(*object)[i].constraint,
+                                               *expr.arguments[i]);
+                    }
                 }
                 return resolved_type::named(callee_type.name);
             }
@@ -1449,6 +2235,8 @@ private:
                                              const ast::source_loc &loc)
     {
         const resolved_type object_type = check_expr(*expr.object);
+        const ast::source_loc member_loc =
+            expr.member_loc.line != 0 ? expr.member_loc : loc;
 
         if (expr.member == "len")
         {
@@ -1456,10 +2244,12 @@ private:
                 (object_type.tag == resolved_type::kind::Primitive &&
                  object_type.prim == ast::primitive_kind::String))
             {
+                record_occ(expr.member, symbol_kind::field, "int", member_loc, false);
                 return resolved_type::make_primitive(ast::primitive_kind::Int);
             }
             if (object_type.is_unknown())
             {
+                record_occ(expr.member, symbol_kind::field, "int", member_loc, false);
                 return resolved_type::make_primitive(ast::primitive_kind::Int);
             }
         }
@@ -1473,6 +2263,8 @@ private:
                 {
                     if (field.name == expr.member)
                     {
+                        record_occ(expr.member, symbol_kind::field, field.type.stringify(),
+                                   member_loc, false);
                         return field.type;
                     }
                 }
@@ -1483,9 +2275,11 @@ private:
         if (expr.member == "id" && object_type.tag == resolved_type::kind::Named &&
             object_type.name == "process")
         {
+            record_occ(expr.member, symbol_kind::field, "int", member_loc, false);
             return resolved_type::make_primitive(ast::primitive_kind::Int);
         }
 
+        record_occ(expr.member, symbol_kind::field, "<unknown>", member_loc, false);
         return resolved_type::unknown();
     }
 
@@ -1542,9 +2336,26 @@ private:
             if (const std::vector<object_field> *object = current_scope_->lookup_object(name))
             {
                 (void)object;
+                record_occ(name, symbol_kind::type, name, expr.loc, false);
                 return resolved_type::named(name);
             }
-            return current_scope_->lookup_var(name);
+            const function_sig *sig = current_scope_->lookup_func(name);
+            if (sig != nullptr)
+            {
+                const bool builtin = sig->loc.line == 0;
+                record_occ(name, builtin ? symbol_kind::builtin : symbol_kind::func,
+                           sig->format_signature(name), expr.loc, false);
+            }
+            const resolved_type var = current_scope_->lookup_var(name);
+            if (!var.is_unknown())
+            {
+                record_occ(name, symbol_kind::var, var.stringify(), expr.loc, false);
+            }
+            else if (sig == nullptr)
+            {
+                record_occ(name, symbol_kind::var, var.stringify(), expr.loc, false);
+            }
+            return var;
         }
         case ast::expr_type::Binary:
             return check_binary(ast::as<ast::binary_expr>(expr), expr.loc);
@@ -1568,6 +2379,14 @@ private:
                                      access.member + '`');
                 }
             }
+            const ast::source_loc enum_loc =
+                access.enum_loc.line != 0 ? access.enum_loc : expr.loc;
+            const ast::source_loc member_loc =
+                access.member_loc.line != 0 ? access.member_loc : expr.loc;
+            record_occ(access.enum_name, symbol_kind::type, access.enum_name, enum_loc,
+                       false);
+            record_occ(access.member, symbol_kind::enum_member, access.enum_name,
+                       member_loc, false);
             return resolved_type::enum_member(access.enum_name);
         }
         case ast::expr_type::Index:

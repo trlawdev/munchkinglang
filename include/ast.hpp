@@ -255,13 +255,16 @@ namespace munx::ast
     {
         std::unique_ptr<expr_node> object; ///< Base expression.
         std::string member;                ///< Member name.
+        source_loc member_loc{};           ///< Location of the member identifier.
     };
 
     /// Enum member access `Enum::Member`.
     struct enum_access_expr
     {
-        std::string enum_name; ///< Enum type name.
-        std::string member;    ///< Enumerant name.
+        std::string enum_name;   ///< Enum type name.
+        std::string member;      ///< Enumerant name.
+        source_loc enum_loc{};   ///< Location of the enum type identifier.
+        source_loc member_loc{}; ///< Location of the enumerant identifier.
     };
 
     /// Index expression `object[index]`.
@@ -574,6 +577,7 @@ namespace munx::ast
         std::vector<parameter> parameters;        ///< Parameters.
         std::unique_ptr<type_node> return_type;   ///< Return type.
         std::unique_ptr<block_stmt> body;         ///< Function body.
+        source_loc name_loc{};                    ///< Location of the function name.
     };
 
     /// Compile-time `::reflect_for(item of collection) { … }`.
@@ -605,21 +609,26 @@ namespace munx::ast
     {
         std::string name;                 ///< Enum name.
         std::vector<std::string> members; ///< Enumerant names.
+        source_loc name_loc{};            ///< Location of the enum name.
     };
 
-    /// One field of an object declaration.
+    /// One field of an object or trait declaration.
     struct object_field
     {
         source_loc loc{};                ///< Location of the field name.
         std::string name;                ///< Field name.
         std::unique_ptr<type_node> type; ///< Field type.
+        /// Optional ` <constraint>[expr]` where `_` is the field value.
+        std::unique_ptr<expr_node> constraint;
     };
 
-    /// Object (struct) declaration.
+    /// Object (struct) or trait (structural interface) declaration.
     struct object_decl
     {
-        std::string name;                  ///< Object type name.
+        std::string name;                  ///< Object / trait type name.
         std::vector<object_field> fields;  ///< Fields.
+        bool is_trait{false};              ///< True when declared with `trait`.
+        source_loc name_loc{};             ///< Location of the type name.
     };
 
     /// `monitor { … } trap(name: type) { … }`.

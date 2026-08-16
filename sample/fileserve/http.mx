@@ -1,0 +1,120 @@
+package http
+load_packages {types, pathutil, mime}
+
+CRLF = "\r\n"
+SERVER_NAME = "fileserve/1.0"
+
+func reason_phrase(status: int): string {
+    if status == 200 {
+        return "OK"
+    }
+    if status == 400 {
+        return "Bad Request"
+    }
+    if status == 403 {
+        return "Forbidden"
+    }
+    if status == 404 {
+        return "Not Found"
+    }
+    if status == 405 {
+        return "Method Not Allowed"
+    }
+    if status == 500 {
+        return "Internal Server Error"
+    }
+    return "Error"
+}
+
+func bad_request(message: string): HttpRequest {
+    return HttpRequest("", "", "", "", "", false, message)
+}
+
+func parse_request(raw: string): HttpRequest {
+    if raw.len == 0 {
+        return bad_request("empty request")
+    }
+
+    lines = split(raw, "\n")
+    if lines.len == 0 {
+        return bad_request("missing request line")
+    }
+
+    request_line = trim(lines[0])
+    parts = split(request_line, " ")
+    if parts.len < 3 {
+        return bad_request("malformed request line")
+    }
+
+    method = parts[0]
+    target = parts[1]
+    version = parts[2]
+
+    if method != "GET" && method != "HEAD" {
+        return HttpRequest(method, "", "", version, "", false, "method not allowed")
+    }
+    if version != "HTTP/1.0" && version != "HTTP/1.1" {
+        return bad_request("unsupported HTTP version")
+    }
+
+    path_and_query = strip_query_and_fragment(target)
+    path = path_and_query[0]
+    query = path_and_query[1]
+    path = decode_basic(path)
+    if path == "" || !is_safe_url_path(path) {
+        return HttpRequest(method, target, query, version, "", false, "unsafe path")
+    }
+
+    host = ""
+    i = 1
+    loop i < lines.len {
+        line = trim(lines[i])
+        if line == "" {
+            break
+        }
+        if has_substring_regex(line, r"^[Hh][Oo][Ss][Tt]:") {
+            // "Host:" is 5 chars; skip optional space after colon.
+            host = trim(slice_string(line, 5, line.len))
+        }
+        i += 1
+    }
+
+    return HttpRequest(method, path, query, version, host, true, "")
+}
+
+func make_response(status: int, content_type: string, body: string): HttpResponse {
+    return HttpResponse(status, reason_phrase(status), content_type, body, len(body))
+}
+
+func text_error(status: int, message: string): HttpResponse {
+    body = concat(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>",
+        cast[string](status), " ", reason_phrase(status),
+        "</title></head><body><h1>",
+        cast[string](status), " ", reason_phrase(status),
+        "</h1><p>", message, "</p><hr><p>", SERVER_NAME, "</p></body></html>\n"
+    )
+    return make_response(status, "text/html; charset=utf-8", body)
+}
+
+func format_headers(resp: HttpResponse, method: string): string {
+    out = concat(
+        "HTTP/1.1 ", cast[string](resp.status), " ", resp.reason, CRLF,
+        "Server: ", SERVER_NAME, CRLF,
+        "Content-Type: ", resp.content_type, CRLF,
+        "Content-Length: ", cast[string](resp.body_len), CRLF,
+        "Connection: close", CRLF
+    )
+    if resp.status == 405 {
+        out = concat(out, "Allow: GET, HEAD", CRLF)
+    }
+    out = concat(out, CRLF)
+    if method != "HEAD" {
+        out = concat(out, resp.body)
+    }
+    return out
+}
+
+func response_for_file(path: string, body: string): HttpResponse {
+    return make_response(200, content_type(path_extension(path)), body)
+}

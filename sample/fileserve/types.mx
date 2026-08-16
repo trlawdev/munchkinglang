@@ -1,0 +1,37 @@
+package types
+
+// Shared types for the fileserve HTTP static file server.
+
+enum io_type {
+    socket,
+    file,
+    tty
+}
+
+enum af_type {
+    inet,
+    inet6
+}
+
+enum sock_type {
+    stream,
+    dgram
+}
+
+object HttpRequest {
+    method: string,
+    path: string,
+    query: string,
+    version: string,
+    host: string,
+    ok: bool,
+    error: string
+}
+
+object HttpResponse {
+    status: int,
+    reason: string,
+    content_type: string,
+    body: string,
+    body_len: int
+}

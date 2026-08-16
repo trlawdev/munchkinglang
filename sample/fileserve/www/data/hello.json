@@ -1,0 +1,5 @@
+{
+  "service": "fileserve",
+  "message": "hello from munx",
+  "ok": true
+}

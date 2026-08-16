@@ -299,6 +299,10 @@ inline void encode_value(std::vector<std::byte> &buffer, const value &item)
         {
             throw_error("foreign callables cannot be sent through a pipe");
         }
+        void operator()(const pointer_ref &) const
+        {
+            throw_error("pointers cannot be sent through a pipe");
+        }
     };
     std::visit(encoder{buffer}, item.data);
 }

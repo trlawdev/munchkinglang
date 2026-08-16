@@ -12,26 +12,27 @@ namespace munx::native::asm_backend
 {
 
 /// Minimal Mach-O 64 relocatable (MH_OBJECT) for x86_64 / arm64.
+/// Constant names are prefixed to avoid clashes with macOS <mach-o/*.h> macros.
 inline std::vector<uint8_t> write_macho64(const object_image &img)
 {
-    constexpr uint32_t MH_MAGIC_64 = 0xFEEDFACF;
-    constexpr uint32_t MH_OBJECT = 0x1;
-    constexpr uint32_t CPU_TYPE_X86_64 = 0x01000007;
-    constexpr uint32_t CPU_TYPE_ARM64 = 0x0100000C;
-    constexpr uint32_t CPU_SUBTYPE_X86_64_ALL = 3;
-    constexpr uint32_t LC_SEGMENT_64 = 0x19;
-    constexpr uint32_t LC_SYMTAB = 0x2;
-    constexpr uint32_t LC_DYSYMTAB = 0xb;
-    constexpr uint8_t N_SECT = 0xe;
-    constexpr uint8_t N_EXT = 0x01;
-    constexpr uint8_t N_UNDF = 0x0;
-    constexpr uint32_t S_ATTR_PURE_INSTRUCTIONS = 0x80000000;
-    constexpr uint32_t S_ATTR_SOME_INSTRUCTIONS = 0x00000400;
+    constexpr uint32_t k_mh_magic_64 = 0xFEEDFACF;
+    constexpr uint32_t k_mh_object = 0x1;
+    constexpr uint32_t k_cpu_type_x86_64 = 0x01000007;
+    constexpr uint32_t k_cpu_type_arm64 = 0x0100000C;
+    constexpr uint32_t k_cpu_subtype_x86_64_all = 3;
+    constexpr uint32_t k_lc_segment_64 = 0x19;
+    constexpr uint32_t k_lc_symtab = 0x2;
+    constexpr uint32_t k_lc_dysymtab = 0xb;
+    constexpr uint8_t k_n_sect = 0xe;
+    constexpr uint8_t k_n_ext = 0x01;
+    constexpr uint8_t k_n_undf = 0x0;
+    constexpr uint32_t k_s_attr_pure_instructions = 0x80000000;
+    constexpr uint32_t k_s_attr_some_instructions = 0x00000400;
 
     const uint32_t cputype =
-        img.arch == cpu_arch::aarch64 ? CPU_TYPE_ARM64 : CPU_TYPE_X86_64;
+        img.arch == cpu_arch::aarch64 ? k_cpu_type_arm64 : k_cpu_type_x86_64;
     const uint32_t cpusubtype =
-        img.arch == cpu_arch::aarch64 ? 0u : CPU_SUBTYPE_X86_64_ALL;
+        img.arch == cpu_arch::aarch64 ? 0u : k_cpu_subtype_x86_64_all;
 
 #pragma pack(push, 1)
     struct section_64
@@ -76,19 +77,19 @@ inline std::vector<uint8_t> write_macho64(const object_image &img)
         n.n_desc = 0;
         if (s.bind == symbol_bind::Undefined)
         {
-            n.n_type = N_UNDF | N_EXT;
+            n.n_type = k_n_undf | k_n_ext;
             n.n_sect = 0;
             n.n_value = 0;
         }
         else if (s.bind == symbol_bind::Local)
         {
-            n.n_type = N_SECT;
+            n.n_type = k_n_sect;
             n.n_sect = s.is_text ? 1 : 2;
             n.n_value = s.value;
         }
         else
         {
-            n.n_type = N_SECT | N_EXT;
+            n.n_type = k_n_sect | k_n_ext;
             n.n_sect = s.is_text ? 1 : 2;
             n.n_value = s.value;
         }
@@ -181,8 +182,8 @@ inline std::vector<uint8_t> write_macho64(const object_image &img)
         std::memcpy(out.data() + at, p, n);
     };
 
-    uint32_t magic = MH_MAGIC_64;
-    uint32_t filetype = MH_OBJECT;
+    uint32_t magic = k_mh_magic_64;
+    uint32_t filetype = k_mh_object;
     uint32_t ncmds = 3;
     uint32_t flags = 0;
     uint32_t reserved = 0;
@@ -196,7 +197,7 @@ inline std::vector<uint8_t> write_macho64(const object_image &img)
     wr(28, &reserved, 4);
 
     uint32_t lc = header_size;
-    uint32_t cmd = LC_SEGMENT_64;
+    uint32_t cmd = k_lc_segment_64;
     uint32_t cmdsize = seg_cmd_size;
     wr(lc, &cmd, 4);
     wr(lc + 4, &cmdsize, 4);
@@ -225,7 +226,7 @@ inline std::vector<uint8_t> write_macho64(const object_image &img)
     text_sec.align = 2;
     text_sec.reloff = reloc_bytes.empty() ? 0 : reloc_off;
     text_sec.nreloc = static_cast<uint32_t>(reloc_bytes.size() / 8);
-    text_sec.flags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS;
+    text_sec.flags = k_s_attr_pure_instructions | k_s_attr_some_instructions;
     wr(lc + 72, &text_sec, sizeof text_sec);
 
     section_64 const_sec{};
@@ -237,7 +238,7 @@ inline std::vector<uint8_t> write_macho64(const object_image &img)
     wr(lc + 72 + sizeof(section_64), &const_sec, sizeof const_sec);
 
     lc += seg_cmd_size;
-    cmd = LC_SYMTAB;
+    cmd = k_lc_symtab;
     cmdsize = symtab_cmd_size;
     uint32_t nsyms = static_cast<uint32_t>(ordered.size());
     uint32_t strsize = static_cast<uint32_t>(strtab.size());
@@ -249,7 +250,7 @@ inline std::vector<uint8_t> write_macho64(const object_image &img)
     wr(lc + 20, &strsize, 4);
 
     lc += symtab_cmd_size;
-    cmd = LC_DYSYMTAB;
+    cmd = k_lc_dysymtab;
     cmdsize = dysym_cmd_size;
     wr(lc, &cmd, 4);
     wr(lc + 4, &cmdsize, 4);

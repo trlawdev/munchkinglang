@@ -346,7 +346,7 @@ namespace munx
                 return make(token_type::TILDE, c = std::string{"~"});
             default:
                 fail("unexpected character");
-                //return make(token_type::END, c = std::string{});
+                return make(token_type::END, c = std::string{});
             }
         }
 
